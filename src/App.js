@@ -1,3 +1,4 @@
+/* global HandwritingStroke */
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import './App.css';
 
@@ -20,6 +21,49 @@ function formatDate(iso) {
 }
 function tbtn(active) { return `tbtn${active ? ' active' : ''}`; }
 
+function escHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function caretFromPoint(x, y) {
+  if (typeof document.caretRangeFromPoint === 'function') {
+    return document.caretRangeFromPoint(x, y);
+  }
+  if (typeof document.caretPositionFromPoint === 'function') {
+    const pos = document.caretPositionFromPoint(x, y);
+    if (pos) {
+      const r = document.createRange();
+      r.setStart(pos.offsetNode, pos.offset);
+      r.collapse(true);
+      return r;
+    }
+  }
+  return null;
+}
+
+function formatRecognizedText(raw) {
+  const lines = raw.split(/\n+/).map(l => l.trimEnd()).filter(l => l.trim());
+  if (!lines.length) return '';
+  const bulletRe  = /^[•\-\*·]\s+/;
+  const orderedRe = /^\d+[.)]\s+/;
+  const allBullet  = lines.every(l => bulletRe.test(l.trim()));
+  const allOrdered = lines.every(l => orderedRe.test(l.trim()));
+  if (allBullet) {
+    return '<ul>' + lines.map(l => `<li>${escHtml(l.trim().replace(bulletRe, ''))}</li>`).join('') + '</ul>';
+  }
+  if (allOrdered) {
+    return '<ol>' + lines.map(l => `<li>${escHtml(l.trim().replace(orderedRe, ''))}</li>`).join('') + '</ol>';
+  }
+  return lines.map(l => {
+    const leading = (l.match(/^( +)/) || ['', ''])[1].length;
+    const indent  = Math.floor(leading / 2);
+    const text    = escHtml(l.trim());
+    return indent > 0
+      ? `<div style="padding-left:${indent * 40}px">${text}</div>`
+      : `<div>${text}</div>`;
+  }).join('');
+}
+
 export default function App() {
   const [notes, setNotes] = useState(() => {
     try { const p = JSON.parse(localStorage.getItem('notes-v2')); if (Array.isArray(p) && p.length) return p; } catch {}
@@ -31,6 +75,8 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
   const [eraserActive, setEraserActive] = useState(false);
+  const [converting, setConverting] = useState(false);
+  const [convertError, setConvertError] = useState(null);
   const editorRef = useRef(null);
   const editorScrollRef = useRef(null);
   const savedRangeRef = useRef(null);
@@ -50,6 +96,13 @@ export default function App() {
   useEffect(() => {
     if (editorRef.current) editorRef.current.innerHTML = activeNote?.content || '';
   }, [eid]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-dismiss conversion error after 3.5 s
+  useEffect(() => {
+    if (!convertError) return;
+    const t = setTimeout(() => setConvertError(null), 3500);
+    return () => clearTimeout(t);
+  }, [convertError]);
 
   const newNote = useCallback(() => {
     const n = makeNote(); setNotes(p => [n, ...p]); setActiveId(n.id); setSidebarOpen(false);
@@ -121,6 +174,78 @@ export default function App() {
       : n
     ));
   }, [eid]);
+
+  const convertDrawingToText = useCallback(async () => {
+    const strokes = activeNote?.strokes;
+    if (!strokes?.length || converting) return;
+
+    setConverting(true);
+    setConvertError(null);
+
+    try {
+      if (!('handwriting' in navigator)) throw new Error('no-support');
+
+      const recognizer = await navigator.handwriting.createRecognizer({ languages: ['en'] });
+      const drawing    = recognizer.startDrawing({ hints: { recognitionType: 'text', inputType: 'mouse' } });
+
+      for (const stroke of strokes) {
+        const s = new HandwritingStroke(); // eslint-disable-line no-undef
+        for (const p of stroke.pts) s.addPoint({ x: p.x, y: p.y, t: p.t ?? 0 });
+        drawing.addStroke(s);
+      }
+
+      const results = await drawing.getPrediction();
+      const rawText = results?.[0]?.text;
+      if (!rawText?.trim()) throw new Error('empty');
+
+      const html = formatRecognizedText(rawText);
+
+      // Find the vertical centre of all strokes (in canvas/scroll coords)
+      const allPts = strokes.flatMap(s => s.pts);
+      const avgY   = allPts.reduce((sum, p) => sum + p.y, 0) / allPts.length;
+
+      // Switch to typing mode so contentEditable is restored
+      setDrawMode(false);
+      setEraserActive(false);
+      await new Promise(r => requestAnimationFrame(r));
+
+      const scrollEl = editorScrollRef.current;
+      const editor   = editorRef.current;
+      if (editor && scrollEl) {
+        editor.focus();
+        const scrollRect = scrollEl.getBoundingClientRect();
+        const viewportX  = scrollRect.left + scrollRect.width / 2;
+        const viewportY  = Math.max(
+          scrollRect.top    + 20,
+          Math.min(scrollRect.bottom - 20, avgY - scrollEl.scrollTop + scrollRect.top)
+        );
+        const range = caretFromPoint(viewportX, viewportY);
+        const sel   = window.getSelection();
+        if (range && sel) {
+          sel.removeAllRanges();
+          sel.addRange(range);
+        } else if (sel) {
+          sel.selectAllChildren(editor);
+          sel.collapseToEnd();
+        }
+        document.execCommand('insertHTML', false, html);
+        onEditorInput();
+      }
+
+      updateStrokes([]);
+    } catch (err) {
+      if (err.message === 'no-support') {
+        setConvertError('Handwriting recognition requires Chrome on Windows or Android.');
+      } else {
+        console.warn('Convert:', err);
+        setConvertError('Could not read handwriting — please try again.');
+      }
+    } finally {
+      setConverting(false);
+    }
+  }, [activeNote, converting, updateStrokes, onEditorInput]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const hasStrokes = !!(activeNote?.strokes?.length);
 
   return (
     <div className="app">
@@ -211,14 +336,31 @@ export default function App() {
                 <EraserIcon />
               </button>
             )}
+            {drawMode && (
+              <button
+                className="tbtn"
+                onPointerDown={() => convertDrawingToText()}
+                title="Convert handwriting to text"
+                disabled={converting || !hasStrokes}
+                style={{ opacity: (!hasStrokes && !converting) ? 0.4 : 1 }}
+              >
+                {converting ? <SpinnerIcon /> : <WandIcon />}
+              </button>
+            )}
           </div>
         </div>
 
-        <div className="editor-scroll" ref={editorScrollRef}>
+        {/* Scroll-zone hint strip — visible only in draw mode */}
+        {drawMode && <div className="scroll-zone-hint" />}
+
+        <div
+          className={`editor-scroll${lined ? ' lined' : ''}`}
+          ref={editorScrollRef}
+        >
           <div className="editor-layer">
             <div
               ref={editorRef}
-              className={`editor${lined ? ' lined' : ''}${drawMode ? ' draw-mode' : ''}`}
+              className={`editor${drawMode ? ' draw-mode' : ''}`}
               contentEditable={!drawMode}
               suppressContentEditableWarning
               role="textbox"
@@ -237,12 +379,16 @@ export default function App() {
             />
           </div>
         </div>
+
+        {convertError && <div className="convert-error">{convertError}</div>}
       </div>
     </div>
   );
 }
 
 // ── Drawing Canvas ──────────────────────────────────────────────────────────────
+
+const SCROLL_ZONE_PX = 60;
 
 function DrawingCanvas({ noteId, initialStrokes, onStrokesChange, drawMode, eraser, scrollElRef }) {
   const canvasRef      = useRef(null);
@@ -318,11 +464,12 @@ function DrawingCanvas({ noteId, initialStrokes, onStrokesChange, drawMode, eras
 
   function getPoint(e) {
     const scrollEl = scrollElRef.current;
-    if (!scrollEl) return { x: 0, y: 0 };
+    if (!scrollEl) return { x: 0, y: 0, t: Date.now() };
     const rect = scrollEl.getBoundingClientRect();
     return {
       x: e.clientX - rect.left,
       y: e.clientY - rect.top + scrollEl.scrollTop,
+      t: Date.now(),
     };
   }
 
@@ -341,9 +488,9 @@ function DrawingCanvas({ noteId, initialStrokes, onStrokesChange, drawMode, eras
     if (!scrollEl) return;
     const rect = scrollEl.getBoundingClientRect();
 
-    // Rightmost 20 px is a dedicated scroll strip
-    if (e.clientX >= rect.right - 20) {
-      isScrollRef.current   = true;
+    // Rightmost SCROLL_ZONE_PX is a dedicated scroll strip
+    if (e.clientX >= rect.right - SCROLL_ZONE_PX) {
+      isScrollRef.current    = true;
       lastScrollYRef.current = e.clientY;
       canvasRef.current.setPointerCapture(e.pointerId);
       return;
@@ -429,6 +576,19 @@ function EraserIcon() {
   return <svg width="18" height="14" viewBox="0 0 18 14" fill="currentColor" aria-hidden="true">
     <rect x="3" y="2" width="12" height="8" rx="1.5" opacity="0.85"/>
     <rect x="0" y="11.5" width="18" height="2" rx="1"/>
+  </svg>;
+}
+function WandIcon() {
+  return <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+    <line x1="2" y1="16" x2="10" y2="8" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+    <path d="M12 1 L12.9 3.1 L15 4 L12.9 4.9 L12 7 L11.1 4.9 L9 4 L11.1 3.1 Z" fill="currentColor"/>
+    <path d="M6 1.5 L6.5 2.9 L7.9 3.4 L6.5 3.9 L6 5.3 L5.5 3.9 L4.1 3.4 L5.5 2.9 Z" fill="currentColor" opacity="0.6"/>
+  </svg>;
+}
+function SpinnerIcon() {
+  return <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true" className="spin">
+    <circle cx="8" cy="8" r="6" opacity="0.2"/>
+    <path d="M8 2 A6 6 0 0 1 14 8"/>
   </svg>;
 }
 function AlignLeftIcon() {
