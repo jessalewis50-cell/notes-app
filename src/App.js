@@ -44,7 +44,7 @@ function caretFromPoint(x, y) {
 function formatRecognizedText(raw) {
   const lines = raw.split(/\n+/).map(l => l.trimEnd()).filter(l => l.trim());
   if (!lines.length) return '';
-  const bulletRe  = /^[•\-\*·]\s+/;
+  const bulletRe  = /^[•\-*·]\s+/;
   const orderedRe = /^\d+[.)]\s+/;
   const allBullet  = lines.every(l => bulletRe.test(l.trim()));
   const allOrdered = lines.every(l => orderedRe.test(l.trim()));
