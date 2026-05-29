@@ -1,0 +1,188 @@
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; overflow: hidden; }
+
+.app {
+  display: flex;
+  height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  position: relative;
+  overflow: hidden;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────── */
+
+.sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: 280px;
+  background: #1e293b;
+  color: #f1f5f9;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(-100%);
+  transition: transform 0.22s ease;
+  z-index: 200;
+  box-shadow: 4px 0 24px rgba(0,0,0,0);
+}
+.sidebar.open {
+  transform: translateX(0);
+  box-shadow: 4px 0 24px rgba(0,0,0,0.35);
+}
+.sb-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 199;
+}
+.sb-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 14px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  flex-shrink: 0;
+}
+.sb-heading { font-size: 1rem; font-weight: 700; letter-spacing: 0.04em; }
+.sb-new {
+  width: 36px; height: 36px; border-radius: 8px; border: none;
+  background: #3b82f6; color: white; font-size: 22px; line-height: 1;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+}
+.sb-new:active { background: #2563eb; }
+
+.sb-list { flex: 1; overflow-y: auto; padding: 8px 0; }
+.sb-note {
+  padding: 12px 14px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,0.05);
+  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  transition: background 0.1s;
+}
+.sb-note:active, .sb-note.active { background: rgba(59,130,246,0.25); }
+.sb-note-title { font-size: 0.9rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 3px; }
+.sb-note-preview { font-size: 0.76rem; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 6px; }
+.sb-note-foot { display: flex; align-items: center; justify-content: space-between; }
+.sb-date { font-size: 0.72rem; color: #64748b; }
+.sb-del {
+  width: 28px; height: 28px; border-radius: 6px; border: none; background: transparent;
+  color: #64748b; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+}
+.sb-del:active { background: rgba(239,68,68,0.2); color: #f87171; }
+
+/* ── Main ────────────────────────────────────────────────── */
+
+.main {
+  flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+}
+
+/* ── Topbar ──────────────────────────────────────────────── */
+
+.topbar {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  background: #1e293b; color: #f8fafc; flex-shrink: 0;
+}
+.title-input {
+  flex: 1; background: transparent; border: none; outline: none;
+  color: #f8fafc; font-size: 1rem; font-weight: 600;
+  padding: 4px 6px; border-radius: 6px;
+  min-width: 0;
+}
+.title-input::placeholder { color: rgba(248,250,252,0.35); }
+.title-input:focus { background: rgba(255,255,255,0.08); }
+
+/* ── Toolbar ─────────────────────────────────────────────── */
+
+.toolbar {
+  display: flex; align-items: center; flex-shrink: 0;
+  background: #f8fafc; border-bottom: 1px solid #e2e8f0;
+  padding: 5px 8px; gap: 3px;
+  overflow-x: auto; overflow-y: hidden;
+  -webkit-overflow-scrolling: touch; scrollbar-width: none;
+}
+.toolbar::-webkit-scrollbar { display: none; }
+.toolbar-group { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.tb-div { display: inline-block; width: 1px; height: 26px; background: #cbd5e1; margin: 0 4px; flex-shrink: 0; }
+
+.tbtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 44px; height: 44px; border: none; border-radius: 8px;
+  background: transparent; color: #374151; font-size: 15px; line-height: 1;
+  cursor: pointer; padding: 0 10px;
+  transition: background 0.1s, color 0.1s;
+  touch-action: manipulation; -webkit-tap-highlight-color: transparent; user-select: none; flex-shrink: 0;
+}
+.tbtn:hover  { background: #e2e8f0; }
+.tbtn:active { background: #dbeafe; color: #1d4ed8; }
+.tbtn.active { background: #dbeafe; color: #1d4ed8; }
+
+.tbtn b { font-size: 16px; font-weight: 800; }
+.tbtn i { font-size: 16px; font-style: italic; font-family: Georgia, serif; }
+.tbtn u { font-size: 16px; text-decoration: underline; }
+.tbtn s { font-size: 16px; text-decoration: line-through; }
+
+.tb-select {
+  height: 44px; border: 1px solid #cbd5e1; border-radius: 8px; padding: 0 10px;
+  font-size: 13px; background: #fff; color: #374151; cursor: pointer;
+  touch-action: manipulation; outline: none; flex-shrink: 0;
+}
+.tb-select:focus { border-color: #93c5fd; box-shadow: 0 0 0 2px #bfdbfe; }
+.font-select { min-width: 130px; }
+.size-select { min-width: 80px; }
+
+.color-btn { cursor: pointer; }
+.color-a { position: relative; font-size: 16px; font-weight: 700; padding-bottom: 4px; display: inline-block; line-height: 1; }
+.color-a::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: var(--c, #000); border-radius: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+.list-num { font-size: 13px; font-weight: 700; font-family: monospace; }
+
+/* ── Editor ──────────────────────────────────────────────── */
+
+.editor {
+  flex: 1; padding: 28px 32px; outline: none;
+  font-size: 16px; line-height: 1.75; color: #1e293b;
+  overflow-y: auto; -webkit-overflow-scrolling: touch;
+  word-wrap: break-word; min-height: 0;
+  caret-color: #2563eb;
+}
+.editor:empty::before { content: attr(data-placeholder); color: #94a3b8; pointer-events: none; }
+
+/* ── Handwriting panel ───────────────────────────────────── */
+
+.hw-panel {
+  flex-shrink: 0; display: flex; flex-direction: column;
+  border-top: 2px solid #bfdbfe; background: #fdfdf5;
+}
+
+.hw-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; background: #eff6ff;
+  border-bottom: 1px solid #bfdbfe; gap: 8px; flex-shrink: 0;
+}
+.hw-hint { font-size: 13px; color: #475569; flex: 1; }
+.hw-btns { display: flex; gap: 6px; flex-shrink: 0; }
+
+.hw-btn {
+  height: 36px; padding: 0 14px; border-radius: 8px; border: 1px solid #cbd5e1;
+  background: #fff; color: #374151; font-size: 13px; font-weight: 500;
+  cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  white-space: nowrap;
+}
+.hw-btn:disabled { opacity: 0.4; cursor: default; }
+.hw-btn.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+.hw-btn.primary:active { background: #1d4ed8; }
+.hw-btn.close-hw { padding: 0 12px; font-size: 16px; }
+
+.hw-canvas {
+  width: 100%; display: block; cursor: crosshair;
+  touch-action: none;
+}
+
+.hw-unsupported {
+  padding: 20px 24px; color: #475569; font-size: 14px;
+  background: #fdf4ff;
+}
+.hw-unsupported strong { color: #7c3aed; }
+.hw-unsupported p { margin: 6px 0 0; }
+
+/* ── Touch refinements ───────────────────────────────────── */
+
+@media (pointer: coarse) {
+  .tbtn { min-width: 48px; height: 48px; }
+  .tb-select { height: 48px; font-size: 14px; }
+  .editor { font-size: 18px; padding: 20px 18px; }
+}

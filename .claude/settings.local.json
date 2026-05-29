@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chromium-cli *)",
+      "Bash(node -e \"require\\('playwright'\\)\")",
+      "Bash(npx --yes playwright --version)",
+      "Bash(npx playwright *)",
+      "Bash(node -e \"const {chromium} = require\\('@playwright/test'\\); console.log\\('ok'\\)\")",
+      "Bash(BROWSER=none npm start)",
+      "Bash(timeout 30 bash -c 'until curl -sf http://localhost:3000 >/dev/null 2>&1; do sleep 1; done')",
+      "PowerShell(Start-Process \"http://localhost:3000\")",
+      "Bash(pkill -f \"react-scripts start\")",
+      "Bash(timeout 60 bash -c 'until curl -sf http://localhost:3000 >/dev/null 2>&1; do sleep 2; done')",
+      "Bash(curl -sf http://localhost:3000)",
+      "Bash(timeout 20 bash -c 'until curl -sf http://localhost:3000 >/dev/null 2>&1; do sleep 1; done')"
+    ]
+  }
+}

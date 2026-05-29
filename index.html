@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Notes</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { height: 100vh; overflow: hidden; }
+    textarea { resize: none; }
+    .note-body-editor { flex: 1; min-height: 0; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 2px; }
+    ::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+  </style>
+</head>
+<body class="bg-gray-50 font-sans antialiased select-none">
+
+<div id="app" class="flex h-screen"></div>
+
+<script>
+const STORAGE_KEY = 'notes-app-v1';
+
+const state = {
+  notes: [],
+  activeId: null,
+  query: '',
+};
+
+function load() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    state.notes = raw ? JSON.parse(raw) : [];
+  } catch {
+    state.notes = [];
+  }
+}
+
+function save() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.notes));
+}
+
+function genId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2);
+}
+
+function fmt(iso) {
+  const d = new Date(iso);
+  const now = new Date();
+  const diff = now - d;
+  if (diff < 60_000) return 'Just now';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  if (diff < 604_800_000) return d.toLocaleDateString('en', { weekday: 'short' });
+  return d.toLocaleDateString('en', { month: 'short', day: 'numeric' });
+}
+
+function filtered() {
+  const q = state.query.trim().toLowerCase();
+  if (!q) return state.notes;
+  return state.notes.filter(n =>
+    n.title.toLowerCase().includes(q) || n.body.toLowerCase().includes(q)
+  );
+}
+
+function activeNote() {
+  return state.notes.find(n => n.id === state.activeId) || null;
+}
+
+// ── Sidebar list ───────────────────────────────────────────────────────────
+
+function renderSidebar() {
+  const list = filtered();
+  const el = document.getElementById('note-list');
+  if (!el) return;
+
+  if (list.length === 0) {
+    el.innerHTML = `<div class="px-4 py-10 text-center text-sm text-gray-400">${
+      state.query ? 'No notes match your search.' : 'No notes yet.'
+    }</div>`;
+    return;
+  }
+
+  el.innerHTML = list.map(n => {
+    const active = n.id === state.activeId;
+    const preview = n.body.trim().split('\n')[0] || 'No content';
+    return `
+      <button
+        data-id="${n.id}"
+        class="note-item w-full text-left px-4 py-3 border-b border-gray-100 transition-colors
+          ${active
+            ? 'bg-indigo-50 border-l-2 border-l-indigo-500'
+            : 'hover:bg-gray-50 border-l-2 border-l-transparent'}"
+      >
+        <div class="flex items-start justify-between gap-2">
+          <span class="font-medium text-sm truncate flex-1 ${active ? 'text-indigo-700' : 'text-gray-800'}">
+            ${escHtml(n.title) || '<span class="italic font-normal text-gray-400">Untitled</span>'}
+          </span>
+          <span class="text-xs text-gray-400 whitespace-nowrap mt-0.5">${fmt(n.updatedAt)}</span>
+        </div>
+        <div class="text-xs text-gray-400 truncate mt-0.5">${escHtml(preview)}</div>
+      </button>`;
+  }).join('');
+}
+
+// ── Editor ─────────────────────────────────────────────────────────────────
+
+function renderEditor() {
+  const note = activeNote();
+  const container = document.getElementById('editor-area');
+  if (!container) return;
+
+  if (!note) {
+    container.innerHTML = `
+      <div class="flex flex-col items-center justify-center h-full text-gray-300 gap-3 pointer-events-none">
+        <svg class="w-16 h-16 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z"/>
+        </svg>
+        <p class="text-sm font-medium">Select a note or create a new one</p>
+      </div>`;
+    return;
+  }
+
+  container.innerHTML = `
+    <div class="flex flex-col h-full">
+      <div class="flex items-center justify-between px-8 pt-7 pb-3 flex-shrink-0">
+        <input
+          id="note-title"
+          type="text"
+          value="${escAttr(note.title)}"
+          placeholder="Untitled"
+          class="flex-1 text-2xl font-semibold text-gray-800 bg-transparent outline-none
+                 placeholder-gray-300 tracking-tight min-w-0"
+        />
+        <button
+          id="delete-btn"
+          title="Delete note"
+          class="ml-4 p-2 text-gray-300 hover:text-red-400 hover:bg-red-50 rounded-lg transition-colors flex-shrink-0"
+        >
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+          </svg>
+        </button>
+      </div>
+      <div class="mx-8 border-b border-gray-100 flex-shrink-0"></div>
+      <textarea
+        id="note-body"
+        placeholder="Start writing…"
+        class="note-body-editor flex-1 w-full px-8 py-5 text-gray-700 bg-transparent outline-none
+               text-[15px] leading-relaxed placeholder-gray-300 overflow-y-auto"
+      >${escHtml(note.body)}</textarea>
+    </div>`;
+
+  attachEditorEvents(note.id);
+}
+
+// ── Full page render ────────────────────────────────────────────────────────
+
+function render() {
+  const count = state.notes.length;
+  document.getElementById('app').innerHTML = `
+    <aside class="w-72 bg-white border-r border-gray-200 flex flex-col flex-shrink-0 h-full">
+      <div class="px-4 py-4 flex items-center justify-between border-b border-gray-100 flex-shrink-0">
+        <h1 class="text-base font-semibold text-gray-700 tracking-tight">Notes</h1>
+        <button
+          id="new-btn"
+          title="New note (Ctrl+N)"
+          class="p-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 active:bg-indigo-800 transition-colors"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="px-3 py-3 border-b border-gray-100 flex-shrink-0">
+        <div class="flex items-center gap-2 bg-gray-100 rounded-lg px-3 py-2">
+          <svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+          </svg>
+          <input
+            id="search-input"
+            type="text"
+            value="${escAttr(state.query)}"
+            placeholder="Search notes…"
+            autocomplete="off"
+            class="bg-transparent outline-none text-sm text-gray-700 placeholder-gray-400 w-full"
+          />
+          ${state.query
+            ? `<button id="clear-search" class="text-gray-400 hover:text-gray-600 transition-colors flex-shrink-0 leading-none">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+               </button>`
+            : ''}
+        </div>
+      </div>
+
+      <div id="note-list" class="flex-1 overflow-y-auto"></div>
+
+      <div class="px-4 py-2.5 border-t border-gray-100 flex-shrink-0">
+        <span class="text-xs text-gray-400">${count} note${count !== 1 ? 's' : ''}</span>
+      </div>
+    </aside>
+
+    <main class="flex-1 flex flex-col h-full overflow-hidden bg-white">
+      <div id="editor-area" class="flex-1 h-full overflow-y-auto"></div>
+    </main>`;
+
+  renderSidebar();
+  renderEditor();
+  attachEvents();
+}
+
+// ── Event binding ───────────────────────────────────────────────────────────
+
+function attachEvents() {
+  document.getElementById('new-btn').addEventListener('click', newNote);
+
+  const searchEl = document.getElementById('search-input');
+  searchEl.addEventListener('input', e => {
+    state.query = e.target.value;
+    renderSidebar();
+    // Toggle the clear button without full re-render
+    const hasBtn = !!document.getElementById('clear-search');
+    if (state.query && !hasBtn) {
+      render();
+      document.getElementById('search-input').focus();
+    } else if (!state.query && hasBtn) {
+      render();
+      document.getElementById('search-input').focus();
+    }
+  });
+
+  searchEl.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { state.query = ''; render(); }
+  });
+
+  document.getElementById('clear-search')?.addEventListener('click', () => {
+    state.query = '';
+    render();
+  });
+
+  document.getElementById('note-list').addEventListener('click', e => {
+    const btn = e.target.closest('.note-item');
+    if (btn && btn.dataset.id !== state.activeId) {
+      state.activeId = btn.dataset.id;
+      renderSidebar();
+      renderEditor();
+    }
+  });
+}
+
+function attachEditorEvents(noteId) {
+  document.getElementById('note-title')?.addEventListener('input', e => {
+    mutateNote(noteId, { title: e.target.value });
+  });
+
+  document.getElementById('note-body')?.addEventListener('input', e => {
+    mutateNote(noteId, { body: e.target.value });
+  });
+
+  document.getElementById('delete-btn')?.addEventListener('click', () => {
+    if (!confirm('Delete this note?')) return;
+    state.notes = state.notes.filter(n => n.id !== noteId);
+    const vis = filtered();
+    state.activeId = vis[0]?.id || state.notes[0]?.id || null;
+    save();
+    render();
+  });
+}
+
+function mutateNote(id, changes) {
+  const idx = state.notes.findIndex(n => n.id === id);
+  if (idx === -1) return;
+  const note = { ...state.notes[idx], ...changes, updatedAt: new Date().toISOString() };
+  // Bubble to top without disrupting active selection mid-typing
+  state.notes.splice(idx, 1);
+  state.notes.unshift(note);
+  save();
+  renderSidebar();
+}
+
+// ── Keyboard shortcuts ──────────────────────────────────────────────────────
+
+function newNote() {
+  const note = { id: genId(), title: '', body: '', updatedAt: new Date().toISOString() };
+  state.notes.unshift(note);
+  state.activeId = note.id;
+  state.query = '';
+  save();
+  render();
+  setTimeout(() => document.getElementById('note-title')?.focus(), 0);
+}
+
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
+    e.preventDefault();
+    newNote();
+  }
+});
+
+// ── Escape helpers ──────────────────────────────────────────────────────────
+
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function escAttr(str) {
+  return String(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// ── Boot ────────────────────────────────────────────────────────────────────
+
+load();
+if (state.notes.length > 0) state.activeId = state.notes[0].id;
+render();
+</script>
+</body>
+</html>
