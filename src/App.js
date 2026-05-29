@@ -38,12 +38,16 @@ export default function App() {
   const savedRangeRef = useRef(null);
   const [formats, setFormats] = useState({});
   const [color, setColor] = useState('#000000');
+  const [lined, setLined] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('notes-lined')) || false; } catch { return false; }
+  });
 
   const eid = (activeId && notes.find(n => n.id === activeId)) ? activeId : notes[0]?.id;
   const activeNote = notes.find(n => n.id === eid) || notes[0];
 
   useEffect(() => { localStorage.setItem('notes-v2', JSON.stringify(notes)); }, [notes]);
   useEffect(() => { localStorage.setItem('notes-active', JSON.stringify(eid)); }, [eid]);
+  useEffect(() => { localStorage.setItem('notes-lined', JSON.stringify(lined)); }, [lined]);
 
   useEffect(() => {
     if (editorRef.current) editorRef.current.innerHTML = activeNote?.content || '';
@@ -184,19 +188,30 @@ export default function App() {
             <button className={tbtn(formats.insertUnorderedList)}onPointerDown={e => execBtn(e,'insertUnorderedList')}title="Bullets"><BulletListIcon /></button>
             <button className={tbtn(formats.insertOrderedList)}  onPointerDown={e => execBtn(e,'insertOrderedList')}  title="Numbers"><span className="list-num">1.</span></button>
           </div>
+          <span className="tb-div" />
+          <div className="toolbar-group">
+            <button className="tbtn" onPointerDown={e => execBtn(e,'outdent')} title="Decrease indent"><OutdentIcon /></button>
+            <button className="tbtn" onPointerDown={e => execBtn(e,'indent')}  title="Increase indent"><IndentIcon /></button>
+          </div>
+          <span className="tb-div" />
+          <div className="toolbar-group">
+            <button className={tbtn(lined)} onPointerDown={() => setLined(l => !l)} title={lined ? 'Plain page' : 'Lined page'}><LinesIcon /></button>
+          </div>
         </div>
 
-        <div
-          ref={editorRef}
-          className="editor"
-          contentEditable
-          suppressContentEditableWarning
-          role="textbox"
-          aria-multiline="true"
-          data-placeholder="Start typing your note…"
-          onInput={onEditorInput}
-          onBlur={saveRange}
-        />
+        <div className="editor-scroll">
+          <div
+            ref={editorRef}
+            className={`editor${lined ? ' lined' : ''}`}
+            contentEditable
+            suppressContentEditableWarning
+            role="textbox"
+            aria-multiline="true"
+            data-placeholder="Start typing your note…"
+            onInput={onEditorInput}
+            onBlur={saveRange}
+          />
+        </div>
 
         {hwMode && <HandwritingCanvas onText={insertText} onClose={() => setHwMode(false)} />}
       </div>
@@ -436,5 +451,29 @@ function BulletListIcon() {
     <circle cx="1.5" cy="1"  r="1.5"/><rect x="5" y="0"  width="13" height="2" rx="1"/>
     <circle cx="1.5" cy="7"  r="1.5"/><rect x="5" y="6"  width="13" height="2" rx="1"/>
     <circle cx="1.5" cy="13" r="1.5"/><rect x="5" y="12" width="13" height="2" rx="1"/>
+  </svg>;
+}
+function IndentIcon() {
+  return <svg width="18" height="14" viewBox="0 0 18 14" fill="currentColor" aria-hidden="true">
+    <rect x="7" y="0"  width="11" height="2" rx="1"/>
+    <rect x="7" y="6"  width="11" height="2" rx="1"/>
+    <rect x="7" y="12" width="11" height="2" rx="1"/>
+    <path d="M0 3L5 7L0 11Z"/>
+  </svg>;
+}
+function OutdentIcon() {
+  return <svg width="18" height="14" viewBox="0 0 18 14" fill="currentColor" aria-hidden="true">
+    <rect x="7" y="0"  width="11" height="2" rx="1"/>
+    <rect x="7" y="6"  width="11" height="2" rx="1"/>
+    <rect x="7" y="12" width="11" height="2" rx="1"/>
+    <path d="M5 3L0 7L5 11Z"/>
+  </svg>;
+}
+function LinesIcon() {
+  return <svg width="18" height="14" viewBox="0 0 18 14" fill="currentColor" aria-hidden="true">
+    <rect x="0" y="0"  width="18" height="1.5" rx="0.75"/>
+    <rect x="0" y="4"  width="18" height="1.5" rx="0.75"/>
+    <rect x="0" y="8"  width="18" height="1.5" rx="0.75"/>
+    <rect x="0" y="12" width="18" height="1.5" rx="0.75"/>
   </svg>;
 }

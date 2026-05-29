@@ -12,7 +12,13 @@
       "Bash(pkill -f \"react-scripts start\")",
       "Bash(timeout 60 bash -c 'until curl -sf http://localhost:3000 >/dev/null 2>&1; do sleep 2; done')",
       "Bash(curl -sf http://localhost:3000)",
-      "Bash(timeout 20 bash -c 'until curl -sf http://localhost:3000 >/dev/null 2>&1; do sleep 1; done')"
+      "Bash(timeout 20 bash -c 'until curl -sf http://localhost:3000 >/dev/null 2>&1; do sleep 1; done')",
+      "Bash(Get-ChildItem -Path C:\\\\Users\\\\jessa\\\\notes-app -Depth 2 -Exclude node_modules)",
+      "Bash(Select-Object -Property FullName, PSIsContainer)",
+      "Bash(Sort-Object FullName)",
+      "Bash(grep -E \"\\\\.\\(jsx|js|tsx|ts|css|html|json\\)$\")",
+      "Bash(npx react-scripts *)",
+      "Bash(git add *)"
     ]
   }
 }

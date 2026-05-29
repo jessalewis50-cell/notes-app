@@ -132,14 +132,31 @@ html, body, #root { height: 100%; margin: 0; overflow: hidden; }
 
 /* ── Editor ──────────────────────────────────────────────── */
 
+.editor-scroll {
+  flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; min-height: 0;
+}
+
 .editor {
-  flex: 1; padding: 28px 32px; outline: none;
+  --editor-pad-top: 28px;
+  --editor-line-h: 28px;
+  padding: var(--editor-pad-top) 32px 28px; outline: none;
   font-size: 16px; line-height: 1.75; color: #1e293b;
-  overflow-y: auto; -webkit-overflow-scrolling: touch;
-  word-wrap: break-word; min-height: 0;
+  word-wrap: break-word; min-height: 100%;
   caret-color: #2563eb;
 }
 .editor:empty::before { content: attr(data-placeholder); color: #94a3b8; pointer-events: none; }
+
+.editor.lined {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent calc(var(--editor-line-h) - 1px),
+    #c4d9f0 calc(var(--editor-line-h) - 1px),
+    #c4d9f0 var(--editor-line-h)
+  );
+  background-size: 100% var(--editor-line-h);
+  background-position: 0 var(--editor-pad-top);
+}
 
 /* ── Handwriting panel ───────────────────────────────────── */
 
@@ -184,5 +201,9 @@ html, body, #root { height: 100%; margin: 0; overflow: hidden; }
 @media (pointer: coarse) {
   .tbtn { min-width: 48px; height: 48px; }
   .tb-select { height: 48px; font-size: 14px; }
-  .editor { font-size: 18px; padding: 20px 18px; }
+  .editor {
+    --editor-pad-top: 20px;
+    --editor-line-h: 31.5px;
+    font-size: 18px; padding: 20px 18px;
+  }
 }
