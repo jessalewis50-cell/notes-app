@@ -82,16 +82,12 @@ export default function App() {
   const savedRangeRef = useRef(null);
   const [formats, setFormats] = useState({});
   const [color, setColor] = useState('#000000');
-  const [lined, setLined] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('notes-lined')) || false; } catch { return false; }
-  });
 
   const eid = (activeId && notes.find(n => n.id === activeId)) ? activeId : notes[0]?.id;
   const activeNote = notes.find(n => n.id === eid) || notes[0];
 
   useEffect(() => { localStorage.setItem('notes-v2', JSON.stringify(notes)); }, [notes]);
   useEffect(() => { localStorage.setItem('notes-active', JSON.stringify(eid)); }, [eid]);
-  useEffect(() => { localStorage.setItem('notes-lined', JSON.stringify(lined)); }, [lined]);
 
   useEffect(() => {
     if (editorRef.current) editorRef.current.innerHTML = activeNote?.content || '';
@@ -185,18 +181,18 @@ export default function App() {
       const canvas = drawingCanvasRef.current?.getCanvas();
       if (!canvas) throw new Error('no-canvas');
 
-      // Crop to the bounding box of strokes so we send a focused image
-      const allPts = strokes.flatMap(s => s.pts);
-      const dpr    = window.devicePixelRatio || 1;
-      const pad    = 24;
-      const minX   = Math.max(0, Math.min(...allPts.map(p => p.x)) - pad);
-      const maxX   = Math.min(canvas.offsetWidth,  Math.max(...allPts.map(p => p.x)) + pad);
-      const minY   = Math.max(0, Math.min(...allPts.map(p => p.y)) - pad);
-      const maxY   = Math.min(canvas.offsetHeight, Math.max(...allPts.map(p => p.y)) + pad);
-      const cropW  = Math.max(1, maxX - minX);
-      const cropH  = Math.max(1, maxY - minY);
+      const penPts = strokes.filter(s => !s.erase).flatMap(s => s.pts);
+      if (!penPts.length) throw new Error('empty');
 
-      // Render cropped strokes onto a white-background canvas for Claude
+      const dpr   = window.devicePixelRatio || 1;
+      const pad   = 24;
+      const minX  = Math.max(0, Math.min(...penPts.map(p => p.x)) - pad);
+      const maxX  = Math.min(canvas.offsetWidth,  Math.max(...penPts.map(p => p.x)) + pad);
+      const minY  = Math.max(0, Math.min(...penPts.map(p => p.y)) - pad);
+      const maxY  = Math.min(canvas.offsetHeight, Math.max(...penPts.map(p => p.y)) + pad);
+      const cropW = Math.max(1, maxX - minX);
+      const cropH = Math.max(1, maxY - minY);
+
       const tmp = document.createElement('canvas');
       tmp.width  = Math.round(cropW * dpr);
       tmp.height = Math.round(cropH * dpr);
@@ -235,9 +231,7 @@ export default function App() {
       if (!rawText?.trim()) throw new Error('empty');
 
       const html = formatRecognizedText(rawText);
-
-      // Use the vertical center of strokes to find the right insertion point
-      const avgY = allPts.reduce((sum, p) => sum + p.y, 0) / allPts.length;
+      const avgY = penPts.reduce((sum, p) => sum + p.y, 0) / penPts.length;
 
       setDrawMode(false);
       setEraserActive(false);
@@ -275,7 +269,7 @@ export default function App() {
     }
   }, [activeNote, converting, updateStrokes, onEditorInput]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const hasStrokes = !!(activeNote?.strokes?.length);
+  const hasStrokes = !!(activeNote?.strokes?.filter(s => !s.erase).length);
 
   return (
     <div className="app">
@@ -346,10 +340,6 @@ export default function App() {
           </div>
           <span className="tb-div" />
           <div className="toolbar-group">
-            <button className={tbtn(lined)} onPointerDown={() => setLined(l => !l)} title={lined ? 'Plain page' : 'Lined page'}><LinesIcon /></button>
-          </div>
-          <span className="tb-div" />
-          <div className="toolbar-group">
             <button
               className={tbtn(drawMode)}
               onPointerDown={() => { setDrawMode(m => !m); setEraserActive(false); }}
@@ -382,10 +372,7 @@ export default function App() {
 
         {drawMode && <div className="scroll-zone-hint" />}
 
-        <div
-          className={`editor-scroll${lined ? ' lined' : ''}`}
-          ref={editorScrollRef}
-        >
+        <div className="editor-scroll" ref={editorScrollRef}>
           <div className="editor-layer">
             <div
               ref={editorRef}
@@ -425,33 +412,32 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
   { noteId, initialStrokes, onStrokesChange, drawMode, eraser, scrollElRef },
   ref
 ) {
-  const canvasRef      = useRef(null);
-  const ctxRef         = useRef(null);
-  const strokesRef     = useRef([...(initialStrokes || [])]);
-  const liveRef        = useRef(null);
-  const eraserPosRef   = useRef(null);
-  const isDrawingRef   = useRef(false);
-  const isScrollRef    = useRef(false);
-  const lastScrollYRef = useRef(0);
+  const canvasRef       = useRef(null);
+  const ctxRef          = useRef(null);
+  const eraserCursorRef = useRef(null); // the overlay div — not the canvas
+  const strokesRef      = useRef([...(initialStrokes || [])]);
+  const liveRef         = useRef(null);
+  const isDrawingRef    = useRef(false);
+  const isScrollRef     = useRef(false);
+  const lastScrollYRef  = useRef(0);
 
-  // Expose canvas element to parent via ref
   useImperativeHandle(ref, () => ({
     getCanvas: () => canvasRef.current,
   }));
 
-  // Reload strokes when the active note changes
   useEffect(() => {
     strokesRef.current = [...(initialStrokes || [])];
     redraw();
   }, [noteId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Clear eraser cursor and redraw when eraser mode toggles
+  // Hide the eraser cursor overlay when eraser mode is turned off
   useEffect(() => {
-    if (!eraser) eraserPosRef.current = null;
+    if (!eraser && eraserCursorRef.current) {
+      eraserCursorRef.current.style.display = 'none';
+    }
     redraw();
   }, [eraser]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Size canvas to match its parent (.editor-layer) and redraw on resize
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -480,25 +466,31 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
     if (!ctx || !canvas) return;
     const dpr = window.devicePixelRatio || 1;
     ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
-    for (const s of strokesRef.current) paintStroke(ctx, s.pts);
-    if (liveRef.current) paintStroke(ctx, liveRef.current.pts);
-    // Draw eraser cursor circle so the user can see the erase radius
-    if (eraser && eraserPosRef.current) {
-      const { x, y } = eraserPosRef.current;
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(x, y, ERASER_RADIUS, 0, Math.PI * 2);
-      ctx.fillStyle   = 'rgba(255, 255, 255, 0.55)';
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(20, 20, 20, 0.75)';
-      ctx.lineWidth   = 1.5;
-      ctx.stroke();
-      ctx.restore();
+
+    // Render strokes in order, respecting pen vs erase operations
+    for (const s of strokesRef.current) {
+      if (s.erase) {
+        applyErase(ctx, s.pts);
+      } else {
+        paintStroke(ctx, s.pts);
+      }
+    }
+
+    // Render the in-progress stroke (never paint eraser strokes here —
+    // erase is applied via destination-out, pen strokes are drawn normally)
+    if (liveRef.current) {
+      if (liveRef.current.erasing) {
+        applyErase(ctx, liveRef.current.pts);
+      } else {
+        paintStroke(ctx, liveRef.current.pts);
+      }
     }
   }
 
   function paintStroke(ctx, pts) {
     if (!pts || pts.length === 0) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
     ctx.strokeStyle = '#1a1a2e';
     ctx.lineWidth   = 2.5;
     ctx.lineCap     = 'round';
@@ -508,6 +500,7 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
       ctx.arc(pts[0].x, pts[0].y, 1.25, 0, Math.PI * 2);
       ctx.fillStyle = '#1a1a2e';
       ctx.fill();
+      ctx.restore();
       return;
     }
     ctx.beginPath();
@@ -519,6 +512,31 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
     }
     ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
     ctx.stroke();
+    ctx.restore();
+  }
+
+  // Erase pixels using destination-out so existing ink is removed cleanly
+  function applyErase(ctx, pts) {
+    if (!pts || pts.length === 0) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.lineWidth = ERASER_RADIUS * 2;
+    ctx.lineCap   = 'round';
+    ctx.lineJoin  = 'round';
+    // Use solid fill/stroke so destination-out removes 100% of the alpha
+    ctx.strokeStyle = 'rgba(0,0,0,1)';
+    ctx.fillStyle   = 'rgba(0,0,0,1)';
+    if (pts.length === 1) {
+      ctx.beginPath();
+      ctx.arc(pts[0].x, pts[0].y, ERASER_RADIUS, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   function getPoint(e) {
@@ -532,12 +550,13 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
     };
   }
 
-  function eraseAt(pt) {
-    const before = strokesRef.current.length;
-    strokesRef.current = strokesRef.current.filter(s =>
-      !s.pts.some(p => Math.hypot(p.x - pt.x, p.y - pt.y) < ERASER_RADIUS)
-    );
-    if (strokesRef.current.length !== before) redraw();
+  // Move the eraser overlay div to follow the pointer — no canvas drawing involved
+  function updateEraserCursor(e) {
+    if (!eraserCursorRef.current) return;
+    const pt = getPoint(e);
+    eraserCursorRef.current.style.left    = pt.x + 'px';
+    eraserCursorRef.current.style.top     = pt.y + 'px';
+    eraserCursorRef.current.style.display = 'block';
   }
 
   function onPointerDown(e) {
@@ -547,6 +566,7 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
     const rect = scrollEl.getBoundingClientRect();
 
     if (e.clientX >= rect.right - SCROLL_ZONE_PX) {
+      if (eraserCursorRef.current) eraserCursorRef.current.style.display = 'none';
       isScrollRef.current    = true;
       lastScrollYRef.current = e.clientY;
       canvasRef.current.setPointerCapture(e.pointerId);
@@ -557,10 +577,7 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
     canvasRef.current.setPointerCapture(e.pointerId);
     isDrawingRef.current = true;
     const pt = getPoint(e);
-    if (eraser) {
-      eraserPosRef.current = pt;
-      eraseAt(pt);
-    }
+    if (eraser) updateEraserCursor(e);
     liveRef.current = { pts: [pt], erasing: eraser };
     redraw();
   }
@@ -573,28 +590,21 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
       return;
     }
 
-    // Always track eraser position for the cursor circle (even when hovering)
+    // Keep eraser cursor overlay in sync whenever we're in eraser mode
     if (eraser && drawMode) {
-      eraserPosRef.current = getPoint(e);
-      if (!isDrawingRef.current) {
-        redraw();
-        return;
-      }
+      updateEraserCursor(e);
+      if (!isDrawingRef.current) return; // hover — no need to redraw canvas
     }
 
     if (!isDrawingRef.current || !liveRef.current) return;
     e.preventDefault();
     const pt = getPoint(e);
     liveRef.current = { ...liveRef.current, pts: [...liveRef.current.pts, pt] };
-    if (eraser) eraseAt(pt);
     redraw();
   }
 
   function onPointerLeave() {
-    if (eraser && eraserPosRef.current) {
-      eraserPosRef.current = null;
-      redraw();
-    }
+    if (eraserCursorRef.current) eraserCursorRef.current.style.display = 'none';
   }
 
   function onPointerUp() {
@@ -602,30 +612,34 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
     if (!isDrawingRef.current) return;
     isDrawingRef.current = false;
 
-    if (liveRef.current) {
-      if (!liveRef.current.erasing && liveRef.current.pts.length > 0) {
-        strokesRef.current = [...strokesRef.current, { pts: liveRef.current.pts }];
-      }
+    if (liveRef.current && liveRef.current.pts.length > 0) {
+      const newStroke = liveRef.current.erasing
+        ? { pts: liveRef.current.pts, erase: true }
+        : { pts: liveRef.current.pts };
+      strokesRef.current = [...strokesRef.current, newStroke];
       onStrokesChange([...strokesRef.current]);
     }
     liveRef.current = null;
     redraw();
   }
 
-  // Hide system cursor when eraser is active — we draw our own circle cursor
   const cursor = !drawMode ? 'default' : eraser ? 'none' : 'crosshair';
 
   return (
-    <canvas
-      ref={canvasRef}
-      className={`draw-canvas${drawMode ? ' active' : ''}`}
-      style={{ cursor }}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
-      onPointerLeave={onPointerLeave}
-    />
+    <>
+      <canvas
+        ref={canvasRef}
+        className={`draw-canvas${drawMode ? ' active' : ''}`}
+        style={{ cursor }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onPointerLeave={onPointerLeave}
+      />
+      {/* Eraser cursor is a pure overlay div — it never touches the canvas pixels */}
+      <div ref={eraserCursorRef} className="eraser-cursor" />
+    </>
   );
 });
 
@@ -709,13 +723,5 @@ function OutdentIcon() {
     <rect x="7" y="6"  width="11" height="2" rx="1"/>
     <rect x="7" y="12" width="11" height="2" rx="1"/>
     <path d="M5 3L0 7L5 11Z"/>
-  </svg>;
-}
-function LinesIcon() {
-  return <svg width="18" height="14" viewBox="0 0 18 14" fill="currentColor" aria-hidden="true">
-    <rect x="0" y="0"  width="18" height="1.5" rx="0.75"/>
-    <rect x="0" y="4"  width="18" height="1.5" rx="0.75"/>
-    <rect x="0" y="8"  width="18" height="1.5" rx="0.75"/>
-    <rect x="0" y="12" width="18" height="1.5" rx="0.75"/>
   </svg>;
 }

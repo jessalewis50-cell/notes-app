@@ -134,7 +134,6 @@ html, body, #root { height: 100%; margin: 0; overflow: hidden; }
 
 /* ── Scroll-zone hint (draw mode only) ───────────────────── */
 
-/* Positioned absolute inside .main so it stays fixed over the page area */
 .scroll-zone-hint {
   position: absolute;
   top: 0; right: 0; bottom: 0;
@@ -176,44 +175,24 @@ html, body, #root { height: 100%; margin: 0; overflow: hidden; }
 
 /* ── Editor ──────────────────────────────────────────────── */
 
-/* CSS variables defined here so both .editor-scroll and .editor can share them */
 .editor-scroll {
-  --editor-pad-top: 28px;
-  --editor-line-h: 28px;
   flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; min-height: 0;
   position: relative;
 }
 
-/* Lined background lives on the scroll container so it always fills the visible area.
-   background-attachment: local makes the pattern scroll with the content. */
-.editor-scroll.lined {
-  background-image: repeating-linear-gradient(
-    to bottom,
-    transparent 0px,
-    transparent calc(var(--editor-line-h) - 1px),
-    #c4d9f0 calc(var(--editor-line-h) - 1px),
-    #c4d9f0 var(--editor-line-h)
-  );
-  background-size: 100% var(--editor-line-h);
-  background-position: 0 var(--editor-pad-top);
-  background-attachment: local;
-}
-
-/* Wrapper that gives the canvas a sized anchor and lets .editor grow with content */
 .editor-layer {
   position: relative;
   min-height: 100%;
 }
 
 .editor {
-  padding: var(--editor-pad-top) 32px 28px; outline: none;
+  padding: 28px 32px 28px; outline: none;
   font-size: 16px; line-height: 1.75; color: #1e293b;
   word-wrap: break-word; min-height: 100%;
   caret-color: #2563eb;
 }
 .editor:empty::before { content: attr(data-placeholder); color: #94a3b8; pointer-events: none; }
 
-/* In draw mode: hide the text cursor and block pointer events through to canvas */
 .editor.draw-mode {
   pointer-events: none;
   user-select: none;
@@ -235,14 +214,24 @@ html, body, #root { height: 100%; margin: 0; overflow: hidden; }
   touch-action: none;
 }
 
+/* Eraser cursor overlay — a pure CSS circle, never touches the canvas pixels */
+.eraser-cursor {
+  position: absolute;
+  width: 40px;   /* ERASER_RADIUS * 2 */
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.5);
+  border: 1.5px solid rgba(20, 20, 20, 0.7);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 2;
+  display: none;  /* shown imperatively via JS */
+}
+
 /* ── Touch refinements ───────────────────────────────────── */
 
 @media (pointer: coarse) {
   .tbtn { min-width: 48px; height: 48px; }
   .tb-select { height: 48px; font-size: 14px; }
-  .editor-scroll {
-    --editor-pad-top: 20px;
-    --editor-line-h: 31.5px;
-  }
   .editor { font-size: 18px; padding: 20px 18px; }
 }
