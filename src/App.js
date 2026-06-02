@@ -177,6 +177,9 @@ export default function App() {
     setConverting(true);
     setConvertError(null);
 
+    const apiKey = process.env.REACT_APP_ANTHROPIC_API_KEY;
+    console.log(apiKey ? 'API key found' : 'API key missing');
+
     try {
       const canvas = drawingCanvasRef.current?.getCanvas();
       if (!canvas) throw new Error('no-canvas');
@@ -208,29 +211,41 @@ export default function App() {
 
       const base64Data = tmp.toDataURL('image/png').split(',')[1];
 
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': process.env.REACT_APP_ANTHROPIC_API_KEY || '',
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-allow-browser': 'true',
-        },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1024,
-          system: 'You are a handwriting recognition assistant. The user will send you an image of handwritten notes on a canvas. Your job is to transcribe the handwriting as accurately as possible into plain text. Preserve the structure of the writing — if there are bullet points transcribe them as bullet points, if there are numbered lists transcribe them as numbered lists, if there are multiple lines keep them as separate lines, if there are indentations preserve them. Return only the transcribed text with no explanation or commentary.',
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: base64Data } },
-              { type: 'text', text: 'Transcribe the handwriting in this image.' },
-            ],
-          }],
-        }),
-      });
+      let response;
+      try {
+        response = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey || '',
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-calls': 'true',
+          },
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 1024,
+            system: 'You are a handwriting recognition assistant. The user will send you an image of handwritten notes on a canvas. Your job is to transcribe the handwriting as accurately as possible into plain text. Preserve the structure of the writing — if there are bullet points transcribe them as bullet points, if there are numbered lists transcribe them as numbered lists, if there are multiple lines keep them as separate lines, if there are indentations preserve them. Return only the transcribed text with no explanation or commentary.',
+            messages: [{
+              role: 'user',
+              content: [
+                { type: 'image', source: { type: 'base64', media_type: 'image/png', data: base64Data } },
+                { type: 'text', text: 'Transcribe the handwriting in this image.' },
+              ],
+            }],
+          }),
+        });
+      } catch (fetchErr) {
+        console.error('Fetch error:', fetchErr);
+        throw fetchErr;
+      }
 
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) {
+        let errorBody;
+        try { errorBody = await response.json(); } catch { errorBody = await response.text(); }
+        console.error('API error:', response.status, errorBody);
+        throw new Error(`HTTP ${response.status}`);
+      }
+
       const data    = await response.json();
       const rawText = data.content?.[0]?.text;
       if (!rawText?.trim()) throw new Error('empty');
