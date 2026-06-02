@@ -28,12 +28,34 @@ function escHtml(s) {
 function formatRecognizedText(raw) {
   const lines = raw.split(/\n+/).map(l => l.trimEnd()).filter(l => l.trim());
   if (!lines.length) return '';
-  const bulletRe  = /^[•\-*·]\s+/;
+  const bulletRe  = /^(\s*)[•\-*·]\s+(.*)$/;
   const orderedRe = /^\d+[.)]\s+/;
-  const allBullet  = lines.every(l => bulletRe.test(l.trim()));
+  const allBullet  = lines.every(l => bulletRe.test(l));
   const allOrdered = lines.every(l => orderedRe.test(l.trim()));
   if (allBullet) {
-    return '<ul>' + lines.map(l => `<li>${escHtml(l.trim().replace(bulletRe, ''))}</li>`).join('') + '</ul>';
+    const items = lines.map(l => { const m = l.match(bulletRe); return { indent: m[1].length, text: escHtml(m[2].trim()) }; });
+    let html = '<ul>';
+    let topOpen = false;
+    let inSub = false;
+    for (const item of items) {
+      if (item.indent === 0) {
+        if (inSub)   { html += '</ul>'; inSub = false; }
+        if (topOpen) { html += '</li>'; }
+        html += `<li>${item.text}`;
+        topOpen = true;
+      } else {
+        if (!topOpen) {
+          html += `<li>${item.text}</li>`;
+        } else {
+          if (!inSub) { html += '<ul style="list-style-type:circle">'; inSub = true; }
+          html += `<li>${item.text}</li>`;
+        }
+      }
+    }
+    if (inSub)   html += '</ul>';
+    if (topOpen) html += '</li>';
+    html += '</ul>';
+    return html;
   }
   if (allOrdered) {
     return '<ol>' + lines.map(l => `<li>${escHtml(l.trim().replace(orderedRe, ''))}</li>`).join('') + '</ol>';
@@ -209,7 +231,7 @@ export default function App() {
           body: JSON.stringify({
             model: 'claude-sonnet-4-6',
             max_tokens: 1024,
-            system: 'You are a handwriting recognition assistant. The user will send you an image of handwritten notes on a canvas. Your job is to transcribe the handwriting as accurately as possible into plain text. Preserve the structure of the writing — if there are bullet points transcribe them as bullet points, if there are numbered lists transcribe them as numbered lists, if there are multiple lines keep them as separate lines, if there are indentations preserve them. Return only the transcribed text with no explanation or commentary.',
+            system: 'You are a handwriting recognition assistant. The user will send you an image of handwritten notes on a canvas. Your job is to transcribe the handwriting as accurately as possible into plain text. Preserve the structure of the writing. For bullet points: use "- " (dash + space) for top-level bullets and "  - " (two spaces + dash + space) for visually indented sub-bullets that appear further to the right beneath a parent bullet. If there are numbered lists transcribe them as numbered lists. Keep multiple lines as separate lines and preserve other indentation. Return only the transcribed text with no explanation or commentary.',
             messages: [{
               role: 'user',
               content: [
