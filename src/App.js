@@ -24,21 +24,6 @@ function escHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function caretFromPoint(x, y) {
-  if (typeof document.caretRangeFromPoint === 'function') {
-    return document.caretRangeFromPoint(x, y);
-  }
-  if (typeof document.caretPositionFromPoint === 'function') {
-    const pos = document.caretPositionFromPoint(x, y);
-    if (pos) {
-      const r = document.createRange();
-      r.setStart(pos.offsetNode, pos.offset);
-      r.collapse(true);
-      return r;
-    }
-  }
-  return null;
-}
 
 function formatRecognizedText(raw) {
   const lines = raw.split(/\n+/).map(l => l.trimEnd()).filter(l => l.trim());
