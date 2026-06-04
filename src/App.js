@@ -1,5 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect, useImperativeHandle } from 'react';
 import './App.css';
+import { supabase } from './supabaseClient';
 
 const FONT_FAMILIES = ['Arial', 'Georgia', 'Times New Roman', 'Courier New', 'Verdana', 'Comic Sans MS'];
 const FONT_SIZES = [
@@ -7,8 +8,11 @@ const FONT_SIZES = [
   { label: '18pt', value: '4' }, { label: '24pt', value: '5' }, { label: '32pt', value: '6' }, { label: '48pt', value: '7' },
 ];
 
-function makeNote() {
-  return { id: Date.now(), title: 'Untitled', content: '', strokes: [], updatedAt: new Date().toISOString() };
+function makeNote(folderId = null) {
+  return { id: Date.now(), title: 'Untitled', content: '', strokes: [], updatedAt: new Date().toISOString(), folderId };
+}
+function mapNote(row) {
+  return { id: row.id, title: row.title || 'Untitled', content: row.content || '', strokes: [], updatedAt: row.updated_at, folderId: row.folder_id || null };
 }
 function stripHtml(h) { return h.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim(); }
 function formatDate(iso) {
@@ -19,11 +23,9 @@ function formatDate(iso) {
     : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 function tbtn(active) { return `tbtn${active ? ' active' : ''}`; }
-
 function escHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
-
 
 function formatRecognizedText(raw) {
   const lines = raw.split(/\n+/).map(l => l.trimEnd()).filter(l => l.trim());
@@ -70,33 +72,128 @@ function formatRecognizedText(raw) {
   }).join('');
 }
 
-export default function App() {
-  const [notes, setNotes] = useState(() => {
-    try { const p = JSON.parse(localStorage.getItem('notes-v2')); if (Array.isArray(p) && p.length) return p; } catch {}
-    return [makeNote()];
-  });
-  const [activeId, setActiveId] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('notes-active')); } catch { return null; }
-  });
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [drawMode, setDrawMode] = useState(false);
-  const [eraserActive, setEraserActive] = useState(false);
-  const [converting, setConverting] = useState(false);
-  const [convertError, setConvertError] = useState(null);
-  const editorRef = useRef(null);
-  const editorScrollRef = useRef(null);
-  const drawingCanvasRef = useRef(null);
-  const savedRangeRef = useRef(null);
-  const [formats, setFormats] = useState({});
-  const [color, setColor] = useState('#000000');
+// ── Auth Screen ─────────────────────────────────────────────────────────────────
 
-  const eid = (activeId && notes.find(n => n.id === activeId)) ? activeId : notes[0]?.id;
+function AuthScreen({ onSignIn, onSignUp, onGuest, error, loading }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  return (
+    <div className="auth-screen">
+      <div className="auth-card">
+        <h1 className="auth-title">Notes</h1>
+        <div className="auth-fields">
+          <input
+            className="auth-input" type="email" placeholder="Email"
+            value={email} onChange={e => setEmail(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && onSignIn(email, password)}
+            autoComplete="email"
+          />
+          <input
+            className="auth-input" type="password" placeholder="Password"
+            value={password} onChange={e => setPassword(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && onSignIn(email, password)}
+            autoComplete="current-password"
+          />
+        </div>
+        {error && <div className="auth-error">{error}</div>}
+        <div className="auth-buttons">
+          <button className="auth-btn primary" onClick={() => onSignIn(email, password)} disabled={loading}>
+            {loading ? 'Please wait…' : 'Sign In'}
+          </button>
+          <button className="auth-btn" onClick={() => onSignUp(email, password)} disabled={loading}>
+            Sign Up
+          </button>
+        </div>
+        <button className="auth-guest-btn" onClick={onGuest} disabled={loading}>
+          Continue as Guest
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── App ─────────────────────────────────────────────────────────────────────────
+
+export default function App() {
+  // Auth
+  const [session, setSession]       = useState(null);
+  const [isGuest, setIsGuest]       = useState(false);
+  const [authError, setAuthError]   = useState(null);
+  const [authLoading, setAuthLoading] = useState(false);
+
+  // Notes & folders
+  const [notes, setNotes]                       = useState([makeNote()]);
+  const [activeId, setActiveId]                 = useState(null);
+  const [folders, setFolders]                   = useState([]);
+  const [expandedFolderIds, setExpandedFolderIds] = useState(new Set());
+  const [activeFolderId, setActiveFolderId]     = useState(null);
+  const [renamingFolderId, setRenamingFolderId] = useState(null);
+
+  // UI
+  const [sidebarOpen, setSidebarOpen]   = useState(false);
+  const [drawMode, setDrawMode]         = useState(false);
+  const [eraserActive, setEraserActive] = useState(false);
+  const [converting, setConverting]     = useState(false);
+  const [convertError, setConvertError] = useState(null);
+  const [saveStatus, setSaveStatus]     = useState('idle'); // 'idle'|'saving'|'saved'|'error'
+  const [formats, setFormats]           = useState({});
+  const [color, setColor]               = useState('#000000');
+
+  // Refs
+  const editorRef        = useRef(null);
+  const editorScrollRef  = useRef(null);
+  const drawingCanvasRef = useRef(null);
+  const savedRangeRef    = useRef(null);
+  const notesRef         = useRef(notes);
+  const sessionRef       = useRef(session);
+  const autosaveTimerRef = useRef(null);
+  const prevEidRef       = useRef(null);
+
+  useEffect(() => { notesRef.current = notes; }, [notes]);
+  useEffect(() => { sessionRef.current = session; }, [session]);
+
+  // Derived
+  const eid        = (activeId && notes.find(n => n.id === activeId)) ? activeId : notes[0]?.id;
   const activeNote = notes.find(n => n.id === eid) || notes[0];
 
-  useEffect(() => { localStorage.setItem('notes-v2', JSON.stringify(notes)); }, [notes]);
-  useEffect(() => { localStorage.setItem('notes-active', JSON.stringify(eid)); }, [eid]);
+  // ── Auth init ──────────────────────────────────────────────────────────────
 
   useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (session) setIsGuest(false);
+    });
+    return () => {
+      subscription.unsubscribe();
+      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    };
+  }, []);
+
+  // Load from Supabase on login; reset on logout
+  useEffect(() => {
+    if (session) {
+      loadAll();
+    } else if (!isGuest) {
+      setNotes([makeNote()]); setActiveId(null); setFolders([]);
+    }
+  }, [session]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Guest: persist notes to localStorage
+  useEffect(() => {
+    if (isGuest) localStorage.setItem('notes-v2', JSON.stringify(notes));
+  }, [notes, isGuest]);
+  useEffect(() => {
+    if (isGuest && eid) localStorage.setItem('notes-active', JSON.stringify(eid));
+  }, [eid, isGuest]);
+
+  // Autosave on note switch + sync editor content
+  useEffect(() => {
+    if (prevEidRef.current && prevEidRef.current !== eid && sessionRef.current) {
+      if (autosaveTimerRef.current) { clearTimeout(autosaveTimerRef.current); autosaveTimerRef.current = null; }
+      doAutosave(prevEidRef.current);
+    }
+    prevEidRef.current = eid;
     if (editorRef.current) editorRef.current.innerHTML = activeNote?.content || '';
   }, [eid]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -106,31 +203,183 @@ export default function App() {
     return () => clearTimeout(t);
   }, [convertError]);
 
+  // ── Data loading ───────────────────────────────────────────────────────────
+
+  async function loadAll() {
+    const [fRes, nRes] = await Promise.all([
+      supabase.from('folders').select('*').order('created_at'),
+      supabase.from('notes').select('*').order('updated_at', { ascending: false }),
+    ]);
+    if (!fRes.error) setFolders(fRes.data || []);
+    const notesData = nRes.data || [];
+    if (!notesData.length) {
+      const { data: row } = await supabase.from('notes')
+        .insert({ title: 'Untitled', content: '', user_id: session.user.id, folder_id: null })
+        .select().single();
+      if (row) { const n = mapNote(row); setNotes([n]); setActiveId(n.id); }
+    } else {
+      const mapped = notesData.map(mapNote);
+      setNotes(mapped); setActiveId(mapped[0].id);
+    }
+  }
+
+  // ── Autosave ───────────────────────────────────────────────────────────────
+
+  const doAutosave = useCallback(async (noteId) => {
+    const note = notesRef.current.find(n => n.id === noteId);
+    const sess = sessionRef.current;
+    if (!note || !sess) return;
+    setSaveStatus('saving');
+    const now = new Date().toISOString();
+    const isNew = typeof note.id === 'number';
+    try {
+      if (isNew) {
+        const { data, error } = await supabase.from('notes')
+          .insert({ title: note.title || 'Untitled', content: note.content || '', user_id: sess.user.id, folder_id: note.folderId || null })
+          .select().single();
+        if (error) throw error;
+        const saved = mapNote(data);
+        setNotes(p => p.map(n => n.id === noteId ? { ...saved, strokes: n.strokes } : n));
+        setActiveId(cur => cur === noteId ? saved.id : cur);
+      } else {
+        const { error } = await supabase.from('notes')
+          .update({ title: note.title, content: note.content, updated_at: now })
+          .eq('id', note.id);
+        if (error) throw error;
+        setNotes(p => p.map(n => n.id === noteId ? { ...n, updatedAt: now } : n));
+      }
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus(s => s === 'saved' ? 'idle' : s), 2000);
+    } catch {
+      setSaveStatus('error');
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function scheduleAutosave(noteId) {
+    if (!sessionRef.current) return;
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = setTimeout(() => doAutosave(noteId), 2000);
+  }
+
+  // ── Auth handlers ──────────────────────────────────────────────────────────
+
+  async function handleSignIn(email, password) {
+    setAuthLoading(true); setAuthError(null);
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) setAuthError(error.message);
+    setAuthLoading(false);
+  }
+
+  async function handleSignUp(email, password) {
+    setAuthLoading(true); setAuthError(null);
+    const { error } = await supabase.auth.signUp({ email, password });
+    if (error) setAuthError(error.message);
+    else setAuthError('Check your email to confirm your account.');
+    setAuthLoading(false);
+  }
+
+  async function handleSignOut() {
+    await supabase.auth.signOut();
+    if (editorRef.current) editorRef.current.innerHTML = '';
+    setDrawMode(false); setEraserActive(false);
+    setFolders([]); setActiveFolderId(null); setExpandedFolderIds(new Set());
+  }
+
+  function handleGuestMode() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('notes-v2'));
+      if (Array.isArray(saved) && saved.length) {
+        setNotes(saved.map(n => ({ ...n, strokes: n.strokes || [] })));
+        const storedActive = JSON.parse(localStorage.getItem('notes-active'));
+        if (storedActive && saved.find(n => n.id === storedActive)) setActiveId(storedActive);
+        else setActiveId(saved[0].id);
+        setIsGuest(true); return;
+      }
+    } catch {}
+    const n = makeNote(); setNotes([n]); setActiveId(n.id); setIsGuest(true);
+  }
+
+  function handleGuestSignIn() { setIsGuest(false); }
+
+  // ── Folder CRUD ────────────────────────────────────────────────────────────
+
+  async function createFolder() {
+    if (!session) return;
+    const { data, error } = await supabase.from('folders')
+      .insert({ name: 'New Folder', user_id: session.user.id })
+      .select().single();
+    if (error) { console.error(error); return; }
+    setFolders(p => [...p, data]);
+    setExpandedFolderIds(s => new Set([...s, data.id]));
+    setActiveFolderId(data.id);
+    setRenamingFolderId(data.id);
+  }
+
+  function toggleFolder(id) {
+    setExpandedFolderIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  async function renameFolder(id, name) {
+    const trimmed = (name || '').trim() || 'New Folder';
+    await supabase.from('folders').update({ name: trimmed }).eq('id', id);
+    setFolders(p => p.map(f => f.id === id ? { ...f, name: trimmed } : f));
+    setRenamingFolderId(null);
+  }
+
+  async function deleteFolder(id, name) {
+    if (!window.confirm(`Delete folder "${name}" and all its notes? This cannot be undone.`)) return;
+    await supabase.from('notes').delete().eq('folder_id', id);
+    await supabase.from('folders').delete().eq('id', id);
+    const currentNotes = notesRef.current;
+    const remaining = currentNotes.filter(n => n.folderId !== id);
+    if (!remaining.length) {
+      const n = makeNote(); setNotes([n]); setActiveId(n.id);
+    } else {
+      setNotes(remaining);
+      if (currentNotes.find(n => n.id === eid && n.folderId === id)) setActiveId(remaining[0].id);
+    }
+    setFolders(p => p.filter(f => f.id !== id));
+    if (activeFolderId === id) setActiveFolderId(null);
+    setExpandedFolderIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+  }
+
+  // ── Note CRUD ──────────────────────────────────────────────────────────────
+
   const newNote = useCallback(() => {
-    const n = makeNote(); setNotes(p => [n, ...p]); setActiveId(n.id); setSidebarOpen(false);
-  }, []);
+    const n = makeNote(activeFolderId);
+    setNotes(p => [n, ...p]); setActiveId(n.id); setSidebarOpen(false);
+  }, [activeFolderId]);
 
   const openNote = useCallback((id) => { setActiveId(id); setSidebarOpen(false); }, []);
 
-  const deleteNote = useCallback((id, e) => {
+  const deleteNote = useCallback(async (id, e) => {
     e.stopPropagation();
+    if (session && typeof id !== 'number') await supabase.from('notes').delete().eq('id', id);
     setNotes(prev => {
       const rest = prev.filter(n => n.id !== id);
       if (!rest.length) { const n = makeNote(); setActiveId(n.id); return [n]; }
       if (id === eid) setActiveId(rest[0].id);
       return rest;
     });
-  }, [eid]);
+  }, [eid, session]);
 
   const setTitle = useCallback((title) => {
     setNotes(p => p.map(n => n.id === eid ? { ...n, title, updatedAt: new Date().toISOString() } : n));
-  }, [eid]);
+    scheduleAutosave(eid);
+  }, [eid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onEditorInput = useCallback(() => {
     if (!editorRef.current) return;
     const content = editorRef.current.innerHTML;
     setNotes(p => p.map(n => n.id === eid ? { ...n, content, updatedAt: new Date().toISOString() } : n));
-  }, [eid]);
+    scheduleAutosave(eid);
+  }, [eid]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Editor / format handlers ───────────────────────────────────────────────
 
   const saveRange = useCallback(() => {
     const sel = window.getSelection();
@@ -162,39 +411,26 @@ export default function App() {
     return () => document.removeEventListener('selectionchange', h);
   }, [saveRange, refreshFormats]);
 
-  const execBtn = useCallback((e, cmd, val = null) => {
+  const execBtn    = useCallback((e, cmd, val = null) => {
     e.preventDefault(); document.execCommand(cmd, false, val); editorRef.current?.focus(); refreshFormats();
   }, [refreshFormats]);
-
   const applyFont  = useCallback((e) => { restoreRange(); document.execCommand('fontName', false, e.target.value); editorRef.current?.focus(); }, [restoreRange]);
   const applySize  = useCallback((e) => { restoreRange(); document.execCommand('fontSize', false, e.target.value); editorRef.current?.focus(); }, [restoreRange]);
   const applyColor = useCallback((e) => { const c = e.target.value; setColor(c); restoreRange(); document.execCommand('foreColor', false, c); editorRef.current?.focus(); }, [restoreRange]);
 
   const updateStrokes = useCallback((newStrokes) => {
-    setNotes(p => p.map(n => n.id === eid
-      ? { ...n, strokes: newStrokes, updatedAt: new Date().toISOString() }
-      : n
-    ));
+    setNotes(p => p.map(n => n.id === eid ? { ...n, strokes: newStrokes, updatedAt: new Date().toISOString() } : n));
   }, [eid]);
 
   const convertDrawingToText = useCallback(async () => {
     if (converting) return;
-
     const strokes = activeNote?.strokes || [];
-    const penPts = strokes.filter(s => !s.erase).flatMap(s => s.pts);
-
-    if (!penPts.length) {
-      setConvertError('Nothing to convert — please write something first.');
-      return;
-    }
-
-    setConverting(true);
-    setConvertError(null);
-
+    const penPts  = strokes.filter(s => !s.erase).flatMap(s => s.pts);
+    if (!penPts.length) { setConvertError('Nothing to convert — please write something first.'); return; }
+    setConverting(true); setConvertError(null);
     try {
       const canvas = drawingCanvasRef.current?.getCanvas();
       if (!canvas) throw new Error('no-canvas');
-
       const dpr   = window.devicePixelRatio || 1;
       const pad   = 24;
       const minX  = Math.max(0, Math.min(...penPts.map(p => p.x)) - pad);
@@ -203,132 +439,184 @@ export default function App() {
       const maxY  = Math.min(canvas.offsetHeight, Math.max(...penPts.map(p => p.y)) + pad);
       const cropW = Math.max(1, maxX - minX);
       const cropH = Math.max(1, maxY - minY);
-
-      const tmp = document.createElement('canvas');
-      tmp.width  = Math.round(cropW * dpr);
-      tmp.height = Math.round(cropH * dpr);
+      const tmp   = document.createElement('canvas');
+      tmp.width   = Math.round(cropW * dpr);
+      tmp.height  = Math.round(cropH * dpr);
       const tmpCtx = tmp.getContext('2d');
       tmpCtx.fillStyle = '#ffffff';
       tmpCtx.fillRect(0, 0, tmp.width, tmp.height);
-      tmpCtx.drawImage(
-        canvas,
-        Math.round(minX * dpr), Math.round(minY * dpr),
-        Math.round(cropW * dpr), Math.round(cropH * dpr),
-        0, 0, tmp.width, tmp.height
-      );
-
+      tmpCtx.drawImage(canvas, Math.round(minX * dpr), Math.round(minY * dpr), Math.round(cropW * dpr), Math.round(cropH * dpr), 0, 0, tmp.width, tmp.height);
       const base64Data = tmp.toDataURL('image/png').split(',')[1];
-      console.log('Canvas captured');
 
       let response;
       try {
         response = await fetch('/api/anthropic/v1/messages', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'anthropic-dangerous-direct-browser-access': 'true',
-          },
+          headers: { 'Content-Type': 'application/json', 'anthropic-dangerous-direct-browser-access': 'true' },
           body: JSON.stringify({
             model: 'claude-sonnet-4-6',
             max_tokens: 1024,
             system: 'You are a handwriting recognition assistant. The user will send you an image of handwritten notes on a canvas. Your job is to transcribe the handwriting as accurately as possible into plain text. Preserve the structure of the writing. For bullet points: use "- " (dash + space) for top-level bullets and "  - " (two spaces + dash + space) for visually indented sub-bullets that appear further to the right beneath a parent bullet. If there are numbered lists transcribe them as numbered lists. Keep multiple lines as separate lines and preserve other indentation. Return only the transcribed text with no explanation or commentary.',
-            messages: [{
-              role: 'user',
-              content: [
-                { type: 'image', source: { type: 'base64', media_type: 'image/png', data: base64Data } },
-                { type: 'text', text: 'Transcribe the handwriting in this image.' },
-              ],
-            }],
+            messages: [{ role: 'user', content: [
+              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: base64Data } },
+              { type: 'text', text: 'Transcribe the handwriting in this image.' },
+            ]}],
           }),
         });
-      } catch (fetchErr) {
-        console.error('Fetch error:', fetchErr);
-        throw fetchErr;
-      }
+      } catch (fetchErr) { console.error('Fetch error:', fetchErr); throw fetchErr; }
 
       if (!response.ok) {
-        let errorBody;
-        try { errorBody = await response.json(); } catch { errorBody = await response.text(); }
-        console.error('API error:', response.status, errorBody);
-        throw new Error(`HTTP ${response.status}`);
+        let errorBody; try { errorBody = await response.json(); } catch { errorBody = await response.text(); }
+        console.error('API error:', response.status, errorBody); throw new Error(`HTTP ${response.status}`);
       }
 
       const data    = await response.json();
-      console.log('API response received', data);
       const rawText = data.content?.[0]?.text;
-      console.log('Extracted text:', rawText);
       if (!rawText?.trim()) throw new Error('empty');
-
       const html = formatRecognizedText(rawText);
 
-      // Switch to typing mode so the editor is interactive
-      setDrawMode(false);
-      setEraserActive(false);
+      setDrawMode(false); setEraserActive(false);
       await new Promise(r => requestAnimationFrame(r));
 
-      const editor  = editorRef.current;
+      const editor   = editorRef.current;
       const scrollEl = editorScrollRef.current;
-      if (!editor) {
-        console.warn('Editor not found — text not inserted');
-      } else {
-        console.log('Inserting text into document');
-
-        // Append directly to innerHTML — no selection/execCommand needed
-        const existing   = editor.innerHTML || '';
-        const separator  = existing ? '<p><br></p>' : '';
-        const newContent = existing + separator + html;
-        editor.innerHTML = newContent;
-
-        // Sync the new innerHTML back into React state
+      if (editor) {
+        const existing  = editor.innerHTML || '';
+        const separator = existing ? '<p><br></p>' : '';
+        editor.innerHTML = existing + separator + html;
         onEditorInput();
-
-        // Scroll to the bottom so the inserted text is visible
         if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
-
-        console.log('Document content after insertion:', editor.innerText.slice(0, 50));
-        console.log('Conversion complete');
       }
-
-      updateStrokes([]);
-      drawingCanvasRef.current?.clearCanvas();
+      updateStrokes([]); drawingCanvasRef.current?.clearCanvas();
     } catch (err) {
       console.warn('Convert:', err);
       setConvertError('Could not convert handwriting — please try again.');
-    } finally {
-      setConverting(false);
-    }
+    } finally { setConverting(false); }
   }, [activeNote, converting, updateStrokes, onEditorInput]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const hasStrokes = !!(activeNote?.strokes?.filter(s => !s.erase).length);
 
-  return (
-    <div className="app">
-      <div className={`sidebar${sidebarOpen ? ' open' : ''}`}>
-        <div className="sb-head">
-          <span className="sb-heading">Notes</span>
-          <button className="sb-new" onPointerDown={newNote} title="New note">＋</button>
-        </div>
-        <div className="sb-list">
-          {notes.map(n => (
-            <div key={n.id} className={`sb-note${n.id === eid ? ' active' : ''}`} onPointerDown={() => openNote(n.id)}>
-              <div className="sb-note-title">{n.title || 'Untitled'}</div>
-              <div className="sb-note-preview">{stripHtml(n.content).slice(0, 55) || 'No content'}</div>
-              <div className="sb-note-foot">
-                <span className="sb-date">{formatDate(n.updatedAt)}</span>
-                <button className="sb-del" onPointerDown={e => deleteNote(n.id, e)} title="Delete">×</button>
-              </div>
-            </div>
-          ))}
+  // ── Sidebar note renderer ──────────────────────────────────────────────────
+
+  function renderSbNote(n, indented = false) {
+    return (
+      <div
+        key={n.id}
+        className={`sb-note${n.id === eid ? ' active' : ''}${indented ? ' sb-note-indented' : ''}`}
+        onPointerDown={() => openNote(n.id)}
+      >
+        <div className="sb-note-title"><span className="sb-note-icon"><DocumentIcon /></span>{n.title || 'Untitled'}</div>
+        <div className="sb-note-preview">{stripHtml(n.content).slice(0, 55) || 'No content'}</div>
+        <div className="sb-note-foot">
+          <span className="sb-date">{formatDate(n.updatedAt)}</span>
+          <button className="sb-del" onPointerDown={e => deleteNote(n.id, e)} title="Delete">×</button>
         </div>
       </div>
-      {sidebarOpen && <div className="sb-overlay" onPointerDown={() => setSidebarOpen(false)} />}
+    );
+  }
+
+  // ── Auth gate ──────────────────────────────────────────────────────────────
+
+  if (!session && !isGuest) {
+    return <AuthScreen onSignIn={handleSignIn} onSignUp={handleSignUp} onGuest={handleGuestMode} error={authError} loading={authLoading} />;
+  }
+
+  // ── Main render ────────────────────────────────────────────────────────────
+
+  return (
+    <div className="app">
+      {/* Sidebar — authenticated only */}
+      {session && (
+        <>
+          <div className={`sidebar${sidebarOpen ? ' open' : ''}`}>
+            <div className="sb-head">
+              <span className="sb-heading">Notes</span>
+              <div className="sb-head-btns">
+                <button className="sb-icon-btn" onPointerDown={createFolder} title="New folder"><FolderPlusIcon /></button>
+                <button className="sb-new" onPointerDown={newNote} title="New note">＋</button>
+              </div>
+            </div>
+            <div className="sb-list">
+              {/* Top-level notes */}
+              {notes.filter(n => !n.folderId).map(n => renderSbNote(n))}
+              {/* Folders */}
+              {folders.map(folder => (
+                <div key={folder.id} className="sb-folder">
+                  <div
+                    className={`sb-folder-head${activeFolderId === folder.id ? ' active' : ''}`}
+                    onPointerDown={() => { setActiveFolderId(folder.id); toggleFolder(folder.id); }}
+                  >
+                    <span className={`sb-folder-arrow${expandedFolderIds.has(folder.id) ? ' open' : ''}`}>▶</span>
+                    <span className="sb-folder-icon"><FolderIcon /></span>
+                    {renamingFolderId === folder.id ? (
+                      <input
+                        className="sb-folder-rename-input"
+                        defaultValue={folder.name}
+                        autoFocus
+                        onClick={e => e.stopPropagation()}
+                        onPointerDown={e => e.stopPropagation()}
+                        onBlur={e => renameFolder(folder.id, e.target.value)}
+                        onKeyDown={e => {
+                          e.stopPropagation();
+                          if (e.key === 'Enter') e.target.blur();
+                          if (e.key === 'Escape') setRenamingFolderId(null);
+                        }}
+                      />
+                    ) : (
+                      <span
+                        className="sb-folder-name"
+                        onDoubleClick={e => { e.stopPropagation(); setRenamingFolderId(folder.id); }}
+                      >
+                        {folder.name}
+                      </span>
+                    )}
+                    <button
+                      className="sb-del"
+                      onPointerDown={e => { e.stopPropagation(); deleteFolder(folder.id, folder.name); }}
+                      title="Delete folder"
+                    >×</button>
+                  </div>
+                  {expandedFolderIds.has(folder.id) && (
+                    <div className="sb-folder-notes">
+                      {notes.filter(n => n.folderId === folder.id).map(n => renderSbNote(n, true))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+          {sidebarOpen && <div className="sb-overlay" onPointerDown={() => setSidebarOpen(false)} />}
+        </>
+      )}
 
       <div className="main">
+        {/* Topbar */}
         <div className="topbar">
-          <button className="tbtn" onPointerDown={() => setSidebarOpen(s => !s)} title="All notes"><MenuIcon /></button>
-          <input className="title-input" value={activeNote?.title || ''} onChange={e => setTitle(e.target.value)} placeholder="Untitled" />
+          {session && (
+            <button className="tbtn" onPointerDown={() => setSidebarOpen(s => !s)} title="All notes"><MenuIcon /></button>
+          )}
+          <input
+            className="title-input"
+            value={activeNote?.title || ''}
+            onChange={e => setTitle(e.target.value)}
+            placeholder="Untitled"
+          />
+          {session && saveStatus !== 'idle' && (
+            <span className={`save-status save-status-${saveStatus}`}>
+              {saveStatus === 'saving' ? 'Saving…' : saveStatus === 'saved' ? 'Saved ✓' : 'Save failed'}
+            </span>
+          )}
+          {session ? (
+            <div className="user-area">
+              <span className="user-email">{session.user.email}</span>
+              <button className="tbtn signout-btn" onPointerDown={handleSignOut}>Sign Out</button>
+            </div>
+          ) : (
+            <button className="tbtn signout-btn" onPointerDown={handleGuestSignIn}>Sign In</button>
+          )}
         </div>
 
+        {/* Toolbar */}
         <div className="toolbar" role="toolbar">
           <div className="toolbar-group">
             <select className="tb-select font-select" defaultValue="Arial" onFocus={saveRange} onChange={applyFont}>
@@ -340,10 +628,10 @@ export default function App() {
           </div>
           <span className="tb-div" />
           <div className="toolbar-group">
-            <button className={tbtn(formats.bold)}         onPointerDown={e => execBtn(e,'bold')}         title="Bold"><b>B</b></button>
-            <button className={tbtn(formats.italic)}       onPointerDown={e => execBtn(e,'italic')}       title="Italic"><i>I</i></button>
-            <button className={tbtn(formats.underline)}    onPointerDown={e => execBtn(e,'underline')}    title="Underline"><u>U</u></button>
-            <button className={tbtn(formats.strikeThrough)}onPointerDown={e => execBtn(e,'strikeThrough')}title="Strikethrough"><s>S</s></button>
+            <button className={tbtn(formats.bold)}          onPointerDown={e => execBtn(e,'bold')}          title="Bold"><b>B</b></button>
+            <button className={tbtn(formats.italic)}        onPointerDown={e => execBtn(e,'italic')}        title="Italic"><i>I</i></button>
+            <button className={tbtn(formats.underline)}     onPointerDown={e => execBtn(e,'underline')}     title="Underline"><u>U</u></button>
+            <button className={tbtn(formats.strikeThrough)} onPointerDown={e => execBtn(e,'strikeThrough')} title="Strikethrough"><s>S</s></button>
           </div>
           <span className="tb-div" />
           <div className="toolbar-group">
@@ -354,14 +642,14 @@ export default function App() {
           </div>
           <span className="tb-div" />
           <div className="toolbar-group">
-            <button className={tbtn(formats.justifyLeft)}  onPointerDown={e => execBtn(e,'justifyLeft')}  title="Left"><AlignLeftIcon /></button>
-            <button className={tbtn(formats.justifyCenter)}onPointerDown={e => execBtn(e,'justifyCenter')}title="Center"><AlignCenterIcon /></button>
-            <button className={tbtn(formats.justifyRight)} onPointerDown={e => execBtn(e,'justifyRight')} title="Right"><AlignRightIcon /></button>
+            <button className={tbtn(formats.justifyLeft)}   onPointerDown={e => execBtn(e,'justifyLeft')}   title="Left"><AlignLeftIcon /></button>
+            <button className={tbtn(formats.justifyCenter)} onPointerDown={e => execBtn(e,'justifyCenter')} title="Center"><AlignCenterIcon /></button>
+            <button className={tbtn(formats.justifyRight)}  onPointerDown={e => execBtn(e,'justifyRight')}  title="Right"><AlignRightIcon /></button>
           </div>
           <span className="tb-div" />
           <div className="toolbar-group">
-            <button className={tbtn(formats.insertUnorderedList)}onPointerDown={e => execBtn(e,'insertUnorderedList')}title="Bullets"><BulletListIcon /></button>
-            <button className={tbtn(formats.insertOrderedList)}  onPointerDown={e => execBtn(e,'insertOrderedList')}  title="Numbers"><span className="list-num">1.</span></button>
+            <button className={tbtn(formats.insertUnorderedList)} onPointerDown={e => execBtn(e,'insertUnorderedList')} title="Bullets"><BulletListIcon /></button>
+            <button className={tbtn(formats.insertOrderedList)}   onPointerDown={e => execBtn(e,'insertOrderedList')}   title="Numbers"><span className="list-num">1.</span></button>
           </div>
           <span className="tb-div" />
           <div className="toolbar-group">
@@ -373,14 +661,7 @@ export default function App() {
             <button
               className={tbtn(drawMode)}
               onPointerDown={() => {
-                setDrawMode(m => {
-                  if (m) {
-                    // switching back to typing — clear any remaining ink
-                    drawingCanvasRef.current?.clearCanvas();
-                    updateStrokes([]);
-                  }
-                  return !m;
-                });
+                setDrawMode(m => { if (m) { drawingCanvasRef.current?.clearCanvas(); updateStrokes([]); } return !m; });
                 setEraserActive(false);
               }}
               title={drawMode ? 'Switch to typing' : 'Switch to drawing'}
@@ -388,11 +669,7 @@ export default function App() {
               {drawMode ? <KeyboardIcon /> : <PenIcon />}
             </button>
             {drawMode && (
-              <button
-                className={tbtn(eraserActive)}
-                onPointerDown={() => setEraserActive(e => !e)}
-                title={eraserActive ? 'Switch to pen' : 'Eraser'}
-              >
+              <button className={tbtn(eraserActive)} onPointerDown={() => setEraserActive(e => !e)} title={eraserActive ? 'Switch to pen' : 'Eraser'}>
                 <EraserIcon />
               </button>
             )}
@@ -409,6 +686,13 @@ export default function App() {
             )}
           </div>
         </div>
+
+        {/* Guest banner */}
+        {isGuest && (
+          <div className="guest-banner">
+            Guest mode — notes are not saved to the cloud. Use <strong>Sign In</strong> above to keep your notes.
+          </div>
+        )}
 
         {drawMode && <div className="scroll-zone-hint" />}
 
@@ -449,12 +733,11 @@ const SCROLL_ZONE_PX = 60;
 const ERASER_RADIUS  = 20;
 
 const DrawingCanvas = React.forwardRef(function DrawingCanvas(
-  { noteId, initialStrokes, onStrokesChange, drawMode, eraser, scrollElRef },
-  ref
+  { noteId, initialStrokes, onStrokesChange, drawMode, eraser, scrollElRef }, ref
 ) {
   const canvasRef       = useRef(null);
   const ctxRef          = useRef(null);
-  const eraserCursorRef = useRef(null); // the overlay div — not the canvas
+  const eraserCursorRef = useRef(null);
   const strokesRef      = useRef([...(initialStrokes || [])]);
   const liveRef         = useRef(null);
   const isDrawingRef    = useRef(false);
@@ -463,24 +746,11 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
 
   useImperativeHandle(ref, () => ({
     getCanvas: () => canvasRef.current,
-    clearCanvas: () => {
-      strokesRef.current = [];
-      redraw();
-    },
+    clearCanvas: () => { strokesRef.current = []; redraw(); },
   }));
 
-  useEffect(() => {
-    strokesRef.current = [...(initialStrokes || [])];
-    redraw();
-  }, [noteId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Hide the eraser cursor overlay when eraser mode is turned off
-  useEffect(() => {
-    if (!eraser && eraserCursorRef.current) {
-      eraserCursorRef.current.style.display = 'none';
-    }
-    redraw();
-  }, [eraser]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { strokesRef.current = [...(initialStrokes || [])]; redraw(); }, [noteId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!eraser && eraserCursorRef.current) eraserCursorRef.current.style.display = 'none'; redraw(); }, [eraser]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -489,15 +759,10 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
       const parent = canvas.parentElement;
       if (!parent) return;
       const dpr = window.devicePixelRatio || 1;
-      const w = canvas.offsetWidth;
-      const h = canvas.offsetHeight;
+      const w = canvas.offsetWidth, h = canvas.offsetHeight;
       if (!w || !h) return;
-      canvas.width  = Math.round(w * dpr);
-      canvas.height = Math.round(h * dpr);
-      const ctx = canvas.getContext('2d');
-      ctx.scale(dpr, dpr);
-      ctxRef.current = ctx;
-      redraw();
+      canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+      const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr); ctxRef.current = ctx; redraw();
     }
     resize();
     const ro = new ResizeObserver(resize);
@@ -510,76 +775,33 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
     if (!ctx || !canvas) return;
     const dpr = window.devicePixelRatio || 1;
     ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
-
-    // Render strokes in order, respecting pen vs erase operations
-    for (const s of strokesRef.current) {
-      if (s.erase) {
-        applyErase(ctx, s.pts);
-      } else {
-        paintStroke(ctx, s.pts);
-      }
-    }
-
-    // Render the in-progress stroke (never paint eraser strokes here —
-    // erase is applied via destination-out, pen strokes are drawn normally)
-    if (liveRef.current) {
-      if (liveRef.current.erasing) {
-        applyErase(ctx, liveRef.current.pts);
-      } else {
-        paintStroke(ctx, liveRef.current.pts);
-      }
-    }
+    for (const s of strokesRef.current) s.erase ? applyErase(ctx, s.pts) : paintStroke(ctx, s.pts);
+    if (liveRef.current) liveRef.current.erasing ? applyErase(ctx, liveRef.current.pts) : paintStroke(ctx, liveRef.current.pts);
   }
 
   function paintStroke(ctx, pts) {
-    if (!pts || pts.length === 0) return;
-    ctx.save();
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.strokeStyle = '#1a1a2e';
-    ctx.lineWidth   = 2.5;
-    ctx.lineCap     = 'round';
-    ctx.lineJoin    = 'round';
+    if (!pts || !pts.length) return;
+    ctx.save(); ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = '#1a1a2e'; ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     if (pts.length === 1) {
-      ctx.beginPath();
-      ctx.arc(pts[0].x, pts[0].y, 1.25, 0, Math.PI * 2);
-      ctx.fillStyle = '#1a1a2e';
-      ctx.fill();
-      ctx.restore();
-      return;
+      ctx.beginPath(); ctx.arc(pts[0].x, pts[0].y, 1.25, 0, Math.PI * 2);
+      ctx.fillStyle = '#1a1a2e'; ctx.fill(); ctx.restore(); return;
     }
-    ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
+    ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
     for (let i = 1; i < pts.length - 1; i++) {
-      const mx = (pts[i].x + pts[i + 1].x) / 2;
-      const my = (pts[i].y + pts[i + 1].y) / 2;
+      const mx = (pts[i].x + pts[i+1].x) / 2, my = (pts[i].y + pts[i+1].y) / 2;
       ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
     }
-    ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
-    ctx.stroke();
-    ctx.restore();
+    ctx.lineTo(pts[pts.length-1].x, pts[pts.length-1].y); ctx.stroke(); ctx.restore();
   }
 
-  // Erase pixels using destination-out so existing ink is removed cleanly
   function applyErase(ctx, pts) {
-    if (!pts || pts.length === 0) return;
-    ctx.save();
-    ctx.globalCompositeOperation = 'destination-out';
-    ctx.lineWidth = ERASER_RADIUS * 2;
-    ctx.lineCap   = 'round';
-    ctx.lineJoin  = 'round';
-    // Use solid fill/stroke so destination-out removes 100% of the alpha
-    ctx.strokeStyle = 'rgba(0,0,0,1)';
-    ctx.fillStyle   = 'rgba(0,0,0,1)';
-    if (pts.length === 1) {
-      ctx.beginPath();
-      ctx.arc(pts[0].x, pts[0].y, ERASER_RADIUS, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      ctx.beginPath();
-      ctx.moveTo(pts[0].x, pts[0].y);
-      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-      ctx.stroke();
-    }
+    if (!pts || !pts.length) return;
+    ctx.save(); ctx.globalCompositeOperation = 'destination-out';
+    ctx.lineWidth = ERASER_RADIUS * 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.strokeStyle = 'rgba(0,0,0,1)'; ctx.fillStyle = 'rgba(0,0,0,1)';
+    if (pts.length === 1) { ctx.beginPath(); ctx.arc(pts[0].x, pts[0].y, ERASER_RADIUS, 0, Math.PI * 2); ctx.fill(); }
+    else { ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y); for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y); ctx.stroke(); }
     ctx.restore();
   }
 
@@ -587,84 +809,57 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
     const scrollEl = scrollElRef.current;
     if (!scrollEl) return { x: 0, y: 0, t: Date.now() };
     const rect = scrollEl.getBoundingClientRect();
-    return {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top + scrollEl.scrollTop,
-      t: Date.now(),
-    };
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top + scrollEl.scrollTop, t: Date.now() };
   }
 
-  // Move the eraser overlay div to follow the pointer — no canvas drawing involved
   function updateEraserCursor(e) {
     if (!eraserCursorRef.current) return;
     const pt = getPoint(e);
-    eraserCursorRef.current.style.left    = pt.x + 'px';
-    eraserCursorRef.current.style.top     = pt.y + 'px';
+    eraserCursorRef.current.style.left = pt.x + 'px';
+    eraserCursorRef.current.style.top  = pt.y + 'px';
     eraserCursorRef.current.style.display = 'block';
   }
 
   function onPointerDown(e) {
     if (!drawMode) return;
-    const scrollEl = scrollElRef.current;
-    if (!scrollEl) return;
+    const scrollEl = scrollElRef.current; if (!scrollEl) return;
     const rect = scrollEl.getBoundingClientRect();
-
     if (e.clientX >= rect.right - SCROLL_ZONE_PX) {
       if (eraserCursorRef.current) eraserCursorRef.current.style.display = 'none';
-      isScrollRef.current    = true;
-      lastScrollYRef.current = e.clientY;
-      canvasRef.current.setPointerCapture(e.pointerId);
-      return;
+      isScrollRef.current = true; lastScrollYRef.current = e.clientY;
+      canvasRef.current.setPointerCapture(e.pointerId); return;
     }
-
-    e.preventDefault();
-    canvasRef.current.setPointerCapture(e.pointerId);
+    e.preventDefault(); canvasRef.current.setPointerCapture(e.pointerId);
     isDrawingRef.current = true;
     const pt = getPoint(e);
     if (eraser) updateEraserCursor(e);
-    liveRef.current = { pts: [pt], erasing: eraser };
-    redraw();
+    liveRef.current = { pts: [pt], erasing: eraser }; redraw();
   }
 
   function onPointerMove(e) {
     if (isScrollRef.current) {
       const scrollEl = scrollElRef.current;
       if (scrollEl) scrollEl.scrollTop += lastScrollYRef.current - e.clientY;
-      lastScrollYRef.current = e.clientY;
-      return;
+      lastScrollYRef.current = e.clientY; return;
     }
-
-    // Keep eraser cursor overlay in sync whenever we're in eraser mode
-    if (eraser && drawMode) {
-      updateEraserCursor(e);
-      if (!isDrawingRef.current) return; // hover — no need to redraw canvas
-    }
-
+    if (eraser && drawMode) { updateEraserCursor(e); if (!isDrawingRef.current) return; }
     if (!isDrawingRef.current || !liveRef.current) return;
     e.preventDefault();
-    const pt = getPoint(e);
-    liveRef.current = { ...liveRef.current, pts: [...liveRef.current.pts, pt] };
-    redraw();
+    liveRef.current = { ...liveRef.current, pts: [...liveRef.current.pts, getPoint(e)] }; redraw();
   }
 
-  function onPointerLeave() {
-    if (eraserCursorRef.current) eraserCursorRef.current.style.display = 'none';
-  }
+  function onPointerLeave() { if (eraserCursorRef.current) eraserCursorRef.current.style.display = 'none'; }
 
   function onPointerUp() {
     if (isScrollRef.current) { isScrollRef.current = false; return; }
     if (!isDrawingRef.current) return;
     isDrawingRef.current = false;
-
     if (liveRef.current && liveRef.current.pts.length > 0) {
-      const newStroke = liveRef.current.erasing
-        ? { pts: liveRef.current.pts, erase: true }
-        : { pts: liveRef.current.pts };
+      const newStroke = liveRef.current.erasing ? { pts: liveRef.current.pts, erase: true } : { pts: liveRef.current.pts };
       strokesRef.current = [...strokesRef.current, newStroke];
       onStrokesChange([...strokesRef.current]);
     }
-    liveRef.current = null;
-    redraw();
+    liveRef.current = null; redraw();
   }
 
   const cursor = !drawMode ? 'default' : eraser ? 'none' : 'crosshair';
@@ -675,13 +870,9 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
         ref={canvasRef}
         className={`draw-canvas${drawMode ? ' active' : ''}`}
         style={{ cursor }}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onPointerLeave={onPointerLeave}
+        onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onPointerLeave={onPointerLeave}
       />
-      {/* Eraser cursor is a pure overlay div — it never touches the canvas pixels */}
       <div ref={eraserCursorRef} className="eraser-cursor" />
     </>
   );
@@ -724,8 +915,7 @@ function WandIcon() {
 }
 function SpinnerIcon() {
   return <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true" className="spin">
-    <circle cx="8" cy="8" r="6" opacity="0.2"/>
-    <path d="M8 2 A6 6 0 0 1 14 8"/>
+    <circle cx="8" cy="8" r="6" opacity="0.2"/><path d="M8 2 A6 6 0 0 1 14 8"/>
   </svg>;
 }
 function AlignLeftIcon() {
@@ -767,5 +957,23 @@ function OutdentIcon() {
     <rect x="7" y="6"  width="11" height="2" rx="1"/>
     <rect x="7" y="12" width="11" height="2" rx="1"/>
     <path d="M5 3L0 7L5 11Z"/>
+  </svg>;
+}
+function FolderIcon() {
+  return <svg width="15" height="13" viewBox="0 0 15 13" fill="currentColor" aria-hidden="true">
+    <path d="M0 2.5A1.5 1.5 0 0 1 1.5 1H5l1.5 2H13.5A1.5 1.5 0 0 1 15 4.5v7A1.5 1.5 0 0 1 13.5 13h-12A1.5 1.5 0 0 1 0 11.5V2.5z" opacity="0.85"/>
+  </svg>;
+}
+function FolderPlusIcon() {
+  return <svg width="16" height="14" viewBox="0 0 16 14" fill="currentColor" aria-hidden="true">
+    <path d="M0 2.5A1.5 1.5 0 0 1 1.5 1H5l1.5 2H14.5A1.5 1.5 0 0 1 16 4.5v8A1.5 1.5 0 0 1 14.5 14h-13A1.5 1.5 0 0 1 0 12.5V2.5z" opacity="0.85"/>
+    <line x1="8" y1="6.5" x2="8" y2="11.5" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+    <line x1="5.5" y1="9" x2="10.5" y2="9" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+  </svg>;
+}
+function DocumentIcon() {
+  return <svg width="11" height="13" viewBox="0 0 11 13" fill="currentColor" aria-hidden="true">
+    <path d="M1 0h6.5L11 3.5V12a1 1 0 0 1-1 1H1a1 1 0 0 1-1-1V1a1 1 0 0 1 1-1z" opacity="0.65"/>
+    <path d="M7 0l4 3.5H8a1 1 0 0 1-1-1V0z" opacity="0.4"/>
   </svg>;
 }
