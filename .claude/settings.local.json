@@ -25,7 +25,8 @@
       "Bash(npm install *)",
       "Bash(npm start *)",
       "PowerShell($pid = \\(Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue\\).OwningProcess; if \\($pid\\) { Stop-Process -Id $pid -Force; Write-Host \"Killed PID $pid\" } else { Write-Host \"Nothing on port 3000\" })",
-      "PowerShell($proc = \\(Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue\\).OwningProcess; if \\($proc\\) { Stop-Process -Id $proc -Force; Write-Host \"Killed PID $proc\" } else { Write-Host \"Nothing on port 3000\" })"
+      "PowerShell($proc = \\(Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue\\).OwningProcess; if \\($proc\\) { Stop-Process -Id $proc -Force; Write-Host \"Killed PID $proc\" } else { Write-Host \"Nothing on port 3000\" })",
+      "PowerShell($proc = \\(Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue\\).OwningProcess; if \\($proc\\) { Stop-Process -Id $proc -Force; Write-Host \"Killed PID $proc\" } else { Write-Host \"Port 3000 is free\" })"
     ]
   }
 }
