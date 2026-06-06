@@ -1329,13 +1329,6 @@ function FolderIcon() {
     <path d="M0 2.5A1.5 1.5 0 0 1 1.5 1H5l1.5 2H13.5A1.5 1.5 0 0 1 15 4.5v7A1.5 1.5 0 0 1 13.5 13h-12A1.5 1.5 0 0 1 0 11.5V2.5z" opacity="0.85"/>
   </svg>;
 }
-function FolderPlusIcon() {
-  return <svg width="16" height="14" viewBox="0 0 16 14" fill="currentColor" aria-hidden="true">
-    <path d="M0 2.5A1.5 1.5 0 0 1 1.5 1H5l1.5 2H14.5A1.5 1.5 0 0 1 16 4.5v8A1.5 1.5 0 0 1 14.5 14h-13A1.5 1.5 0 0 1 0 12.5V2.5z" opacity="0.85"/>
-    <line x1="8" y1="6.5" x2="8" y2="11.5" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
-    <line x1="5.5" y1="9" x2="10.5" y2="9" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
-  </svg>;
-}
 function DocumentIcon() {
   return <svg width="11" height="13" viewBox="0 0 11 13" fill="currentColor" aria-hidden="true">
     <path d="M1 0h6.5L11 3.5V12a1 1 0 0 1-1 1H1a1 1 0 0 1-1-1V1a1 1 0 0 1 1-1z" opacity="0.65"/>
