@@ -6,17 +6,49 @@ import ReactQuill from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
 import Quill from 'quill';
 
-// Use inline-style attributors so font/size are stored as style='...' not class=''
-const FontStyle = Quill.import('attributors/style/font');
-const SizeStyle = Quill.import('attributors/style/size');
-Quill.register(FontStyle, true);
-Quill.register(SizeStyle, true);
+// Font: class-based so Quill stores value as ql-font-<name>; CSS in App.css maps classes to font-family.
+const Font = Quill.import('formats/font');
+Font.whitelist = ['arial', 'times-new-roman', 'courier-new', 'georgia', 'verdana', 'helvetica'];
+Quill.register(Font, true);
 
-const FONT_FAMILIES = ['Arial', 'Georgia', 'Times New Roman', 'Courier New', 'Verdana', 'Comic Sans MS'];
-const FONT_SIZES = [
-  { label: '10pt', value: '10px' }, { label: '13pt', value: '13px' }, { label: '16pt', value: '16px' },
-  { label: '18pt', value: '18px' }, { label: '24pt', value: '24px' }, { label: '32pt', value: '32px' }, { label: '48pt', value: '48px' },
+// Size: style-based attributor; whitelist of pt values so only known sizes are accepted.
+const Size = Quill.import('attributors/style/size');
+Size.whitelist = ['10pt','12pt','14pt','16pt','18pt','20pt','22pt','24pt','26pt','28pt'];
+Quill.register(Size, true);
+
+// Stable module and format configs — must live outside App so the object/array references
+// never change. ReactQuill reinitializes Quill (resetting cursor to 0) whenever any
+// dirtyProp (modules, formats, bounds, theme, children) receives a new reference.
+const QUILL_MODULES = { toolbar: false };
+const QUILL_FORMATS = ['bold', 'italic', 'underline', 'list', 'indent', 'align', 'color', 'font', 'size'];
+
+// Memoized wrapper so Quill never remounts due to unrelated App re-renders.
+const QuillEditor = React.memo(React.forwardRef(function QuillEditor(
+  { className, placeholder, onChange, onChangeSelection }, ref
+) {
+  return (
+    <ReactQuill
+      ref={ref}
+      theme="snow"
+      modules={QUILL_MODULES}
+      formats={QUILL_FORMATS}
+      className={className}
+      placeholder={placeholder}
+      onChange={onChange}
+      onChangeSelection={onChangeSelection}
+    />
+  );
+}));
+
+const FONT_FAMILIES = [
+  { label: 'Arial',           value: 'arial' },
+  { label: 'Georgia',         value: 'georgia' },
+  { label: 'Times New Roman', value: 'times-new-roman' },
+  { label: 'Courier New',     value: 'courier-new' },
+  { label: 'Verdana',         value: 'verdana' },
+  { label: 'Helvetica',       value: 'helvetica' },
 ];
+const FONT_SIZES = ['10pt','12pt','14pt','16pt','18pt','20pt','22pt','24pt','26pt','28pt'];
 
 function makeNote(folderId = null) {
   return { id: Date.now(), title: 'Untitled', content: '', strokes: [], updatedAt: new Date().toISOString(), folderId };
@@ -220,14 +252,18 @@ export default function App() {
   const [color, setColor]               = useState('#000000');
 
   // Refs
-  const quillRef         = useRef(null);   // ReactQuill component ref
-  const editorScrollRef  = useRef(null);
-  const drawingCanvasRef = useRef(null);
-  const savedQuillRange  = useRef(null);   // last Quill selection before toolbar focus
-  const notesRef         = useRef(notes);
-  const sessionRef       = useRef(session);
-  const autosaveTimerRef = useRef(null);
-  const prevEidRef       = useRef(null);
+  const quillRef          = useRef(null);   // ReactQuill component ref
+  const editorScrollRef   = useRef(null);
+  const drawingCanvasRef  = useRef(null);
+  const savedQuillRange   = useRef(null);   // last Quill selection before toolbar focus
+  const lastSelectionRef  = useRef(null);   // last known non-null selection (fallback for buttons)
+  const notesRef          = useRef(notes);
+  const sessionRef        = useRef(session);
+  const autosaveTimerRef  = useRef(null);
+  const prevEidRef        = useRef(null);
+  // Stores the latest typed HTML per note id without triggering React re-renders.
+  // doAutosave reads from here; React state is only updated at autosave time.
+  const pendingContentRef = useRef({});
 
   useEffect(() => { notesRef.current = notes; }, [notes]);
   useEffect(() => { sessionRef.current = session; }, [session]);
@@ -269,15 +305,21 @@ export default function App() {
 
   // Autosave on note switch + sync editor content
   useEffect(() => {
-    if (prevEidRef.current && prevEidRef.current !== eid && sessionRef.current) {
+    if (prevEidRef.current && prevEidRef.current !== eid) {
       if (autosaveTimerRef.current) { clearTimeout(autosaveTimerRef.current); autosaveTimerRef.current = null; }
       doAutosave(prevEidRef.current);
     }
     prevEidRef.current = eid;
     const quillInst = quillRef.current?.getEditor();
     if (quillInst) {
-      quillInst.clipboard.dangerouslyPasteHTML(activeNote?.content || '');
-      quillInst.setSelection(0, 0, 'silent');
+      // Prefer pending (unsaved typed) content; fall back to React state from DB
+      const newContent = pendingContentRef.current[eid] ?? activeNote?.content ?? '';
+      // Skip paste when content already matches — prevents cursor reset on new-note ID
+      // transitions (numeric temp id → UUID) and rapid back-and-forth note switches
+      if (quillInst.root.innerHTML !== newContent) {
+        quillInst.clipboard.dangerouslyPasteHTML(newContent);
+        quillInst.setSelection(0, 0, 'silent');
+      }
     }
   }, [eid]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -311,15 +353,23 @@ export default function App() {
 
   const doAutosave = useCallback(async (noteId) => {
     const note = notesRef.current.find(n => n.id === noteId);
+    if (!note) return;
+    // pendingContentRef always has the latest typed HTML; fall back to stored note content
+    const content = pendingContentRef.current[noteId] ?? note.content;
     const sess = sessionRef.current;
-    if (!note || !sess) return;
+    // Guest mode: no Supabase, just flush content into React state so localStorage fires
+    if (!sess) {
+      setNotes(p => p.map(n => n.id === noteId ? { ...n, content, updatedAt: new Date().toISOString() } : n));
+      delete pendingContentRef.current[noteId];
+      return;
+    }
     setSaveStatus('saving');
     const now = new Date().toISOString();
     const isNew = typeof note.id === 'number';
     try {
       if (isNew) {
         const { data, error } = await supabase.from('notes')
-          .insert({ title: note.title || 'Untitled', content: note.content || '', user_id: sess.user.id, folder_id: note.folderId || null })
+          .insert({ title: note.title || 'Untitled', content: content || '', user_id: sess.user.id, folder_id: note.folderId || null })
           .select().single();
         if (error) throw error;
         const saved = mapNote(data);
@@ -327,11 +377,13 @@ export default function App() {
         setActiveId(cur => cur === noteId ? saved.id : cur);
       } else {
         const { error } = await supabase.from('notes')
-          .update({ title: note.title, content: note.content, updated_at: now })
+          .update({ title: note.title, content, updated_at: now })
           .eq('id', note.id);
         if (error) throw error;
-        setNotes(p => p.map(n => n.id === noteId ? { ...n, updatedAt: now } : n));
+        // Include content so React state stays current for note-switching
+        setNotes(p => p.map(n => n.id === noteId ? { ...n, content, updatedAt: now } : n));
       }
+      delete pendingContentRef.current[noteId];
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus(s => s === 'saved' ? 'idle' : s), 2000);
     } catch { setSaveStatus('error'); }
@@ -473,26 +525,34 @@ export default function App() {
   const onEditorInput = useCallback(() => {
     const quill = quillRef.current?.getEditor();
     if (!quill) return;
-    const content = quill.root.innerHTML;
-    setNotes(p => p.map(n => n.id === eid ? { ...n, content, updatedAt: new Date().toISOString() } : n));
+    // Store latest content in a ref — no setState, so no re-render on every keystroke.
+    // doAutosave (and guest-mode persistence) flush this to React state on the 2s debounce.
+    pendingContentRef.current[eid] = quill.root.innerHTML;
     scheduleAutosave(eid);
   }, [eid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Editor / format handlers ───────────────────────────────────────────────
 
-  // Save Quill selection before a toolbar control steals focus
+  // Save Quill selection — called from onMouseDown on selects/color (before focus leaves).
+  // Never overwrites with null; only updates when editor still has focus.
   const saveQuillRange = useCallback(() => {
     const quill = quillRef.current?.getEditor();
-    if (quill) savedQuillRange.current = quill.getSelection();
+    if (!quill) return;
+    const sel = quill.getSelection();
+    if (sel !== null) {
+      savedQuillRange.current = sel;
+      lastSelectionRef.current = sel;
+    }
   }, []);
 
-  // Restore saved Quill selection so format commands hit the right text
+  // Restore saved Quill selection so format commands from selects/color hit the right text
   const restoreQuillRange = useCallback(() => {
     const quill = quillRef.current?.getEditor();
     if (!quill) return;
     quill.focus();
-    if (savedQuillRange.current) {
-      quill.setSelection(savedQuillRange.current.index, savedQuillRange.current.length, 'silent');
+    const range = savedQuillRange.current ?? lastSelectionRef.current;
+    if (range) {
+      quill.setSelection(range.index, range.length, 'silent');
     }
   }, []);
 
@@ -512,11 +572,32 @@ export default function App() {
     });
   }, []);
 
+  // Stable handlers passed to QuillEditor — must not be recreated on every App render
+  // so React.memo on QuillEditor can bail out during unrelated state changes.
+  const handleEditorChange = useCallback((_, __, source) => {
+    if (source === 'user') onEditorInput();
+  }, [onEditorInput]);
+
+  const handleSelectionChange = useCallback((range) => {
+    if (range) {
+      savedQuillRange.current = range;
+      lastSelectionRef.current = range;
+    }
+    refreshFormats();
+  }, [refreshFormats]);
+
   const execBtn = useCallback((e, cmd) => {
     e.preventDefault();
-    restoreQuillRange();
     const quill = quillRef.current?.getEditor();
     if (!quill) return;
+    // onMouseDown+preventDefault keeps editor focus, so getSelection() returns the live range.
+    // Fall back to lastSelectionRef on touch devices or if focus was lost some other way.
+    let sel = quill.getSelection();
+    if (!sel) {
+      quill.focus();
+      sel = lastSelectionRef.current;
+      if (sel) quill.setSelection(sel.index, sel.length, 'silent');
+    }
     const f = quill.getFormat();
     switch (cmd) {
       case 'bold':                quill.format('bold',      !f.bold);                              break;
@@ -532,7 +613,7 @@ export default function App() {
       default: break;
     }
     refreshFormats();
-  }, [refreshFormats, restoreQuillRange]);
+  }, [refreshFormats]);
 
   const applyFont = useCallback((e) => {
     restoreQuillRange();
@@ -719,41 +800,43 @@ export default function App() {
 
             <div className="toolbar" role="toolbar">
               <div className="toolbar-group">
-                <select className="tb-select font-select" defaultValue="Arial" onFocus={saveQuillRange} onChange={applyFont}>
-                  {FONT_FAMILIES.map(f => <option key={f} value={f}>{f}</option>)}
+                <select className="tb-select font-select" defaultValue="arial" onMouseDown={saveQuillRange} onChange={applyFont}>
+                  {FONT_FAMILIES.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
                 </select>
-                <select className="tb-select size-select" defaultValue="16px" onFocus={saveQuillRange} onChange={applySize}>
-                  {FONT_SIZES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                <select className="tb-select size-select" defaultValue="16pt" onMouseDown={saveQuillRange} onChange={applySize}>
+                  {FONT_SIZES.map(s => <option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
               <span className="tb-div" />
               <div className="toolbar-group">
-                <button className={tbtn(formats.bold)}      onPointerDown={e => execBtn(e,'bold')}      title="Bold"><b>B</b></button>
-                <button className={tbtn(formats.italic)}    onPointerDown={e => execBtn(e,'italic')}    title="Italic"><i>I</i></button>
-                <button className={tbtn(formats.underline)} onPointerDown={e => execBtn(e,'underline')} title="Underline"><u>U</u></button>
+                <button className={tbtn(formats.bold)}      onMouseDown={e => execBtn(e,'bold')}      title="Bold"><b>B</b></button>
+                <button className={tbtn(formats.italic)}    onMouseDown={e => execBtn(e,'italic')}    title="Italic"><i>I</i></button>
+                <button className={tbtn(formats.underline)} onMouseDown={e => execBtn(e,'underline')} title="Underline"><u>U</u></button>
               </div>
               <span className="tb-div" />
               <div className="toolbar-group">
-                <label className="tbtn color-btn" title="Text color">
+                <label className="tbtn color-btn" title="Text color"
+                  onMouseDown={e => { e.preventDefault(); saveQuillRange(); }}
+                >
                   <span className="color-a" style={{ '--c': color }}>A</span>
-                  <input type="color" value={color} onFocus={saveQuillRange} onChange={applyColor} className="sr-only" />
+                  <input type="color" value={color} onChange={applyColor} className="sr-only" />
                 </label>
               </div>
               <span className="tb-div" />
               <div className="toolbar-group">
-                <button className={tbtn(formats.justifyLeft)}   onPointerDown={e => execBtn(e,'justifyLeft')}   title="Left"><AlignLeftIcon /></button>
-                <button className={tbtn(formats.justifyCenter)} onPointerDown={e => execBtn(e,'justifyCenter')} title="Center"><AlignCenterIcon /></button>
-                <button className={tbtn(formats.justifyRight)}  onPointerDown={e => execBtn(e,'justifyRight')}  title="Right"><AlignRightIcon /></button>
+                <button className={tbtn(formats.justifyLeft)}   onMouseDown={e => execBtn(e,'justifyLeft')}   title="Left"><AlignLeftIcon /></button>
+                <button className={tbtn(formats.justifyCenter)} onMouseDown={e => execBtn(e,'justifyCenter')} title="Center"><AlignCenterIcon /></button>
+                <button className={tbtn(formats.justifyRight)}  onMouseDown={e => execBtn(e,'justifyRight')}  title="Right"><AlignRightIcon /></button>
               </div>
               <span className="tb-div" />
               <div className="toolbar-group">
-                <button className={tbtn(formats.insertUnorderedList)} onPointerDown={e => execBtn(e,'insertUnorderedList')} title="Bullets"><BulletListIcon /></button>
-                <button className={tbtn(formats.insertOrderedList)}   onPointerDown={e => execBtn(e,'insertOrderedList')}   title="Numbers"><span className="list-num">1.</span></button>
+                <button className={tbtn(formats.insertUnorderedList)} onMouseDown={e => execBtn(e,'insertUnorderedList')} title="Bullets"><BulletListIcon /></button>
+                <button className={tbtn(formats.insertOrderedList)}   onMouseDown={e => execBtn(e,'insertOrderedList')}   title="Numbers"><span className="list-num">1.</span></button>
               </div>
               <span className="tb-div" />
               <div className="toolbar-group">
-                <button className="tbtn" onPointerDown={e => execBtn(e,'outdent')} title="Decrease indent"><OutdentIcon /></button>
-                <button className="tbtn" onPointerDown={e => execBtn(e,'indent')}  title="Increase indent"><IndentIcon /></button>
+                <button className="tbtn" onMouseDown={e => execBtn(e,'outdent')} title="Decrease indent"><OutdentIcon /></button>
+                <button className="tbtn" onMouseDown={e => execBtn(e,'indent')}  title="Increase indent"><IndentIcon /></button>
               </div>
               <span className="tb-div" />
               <div className="toolbar-group">
@@ -788,18 +871,15 @@ export default function App() {
 
             <div className="editor-scroll" ref={editorScrollRef}>
               <div className="editor-layer">
-                <ReactQuill
-                  ref={quillRef}
-                  theme="snow"
-                  modules={{ toolbar: false }}
-                  className={`quill-editor${drawMode ? ' draw-mode' : ''}`}
-                  placeholder="Start typing your note…"
-                  onChange={(_, __, source) => { if (source === 'user') onEditorInput(); }}
-                  onChangeSelection={(range) => {
-                    if (range) savedQuillRange.current = range;
-                    refreshFormats();
-                  }}
-                />
+                <div key="editor-stable">
+                  <QuillEditor
+                    ref={quillRef}
+                    className={`quill-editor${drawMode ? ' draw-mode' : ''}`}
+                    placeholder="Start typing your note…"
+                    onChange={handleEditorChange}
+                    onChangeSelection={handleSelectionChange}
+                  />
+                </div>
                 <DrawingCanvas
                   ref={drawingCanvasRef} noteId={eid}
                   initialStrokes={activeNote?.strokes || []}

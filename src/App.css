@@ -224,6 +224,16 @@ html, body, #root { height: 100%; margin: 0; overflow: hidden; }
   .editor-scroll .ql-editor { font-size: 18px !important; padding: 20px 18px !important; }
 }
 
+/* ── Font family classes (Quill class-based font attributor) ─ */
+/* Quill wraps text in <span class="ql-font-<name>">; these rules supply the actual typeface. */
+
+.ql-font-arial           { font-family: Arial, sans-serif; }
+.ql-font-times-new-roman { font-family: 'Times New Roman', serif; }
+.ql-font-courier-new     { font-family: 'Courier New', monospace; }
+.ql-font-georgia         { font-family: Georgia, serif; }
+.ql-font-verdana         { font-family: Verdana, sans-serif; }
+.ql-font-helvetica       { font-family: Helvetica, sans-serif; }
+
 /* ── Bullet list indent styles (matches Word) ────────────── */
 /* Quill 2.x stores the marker in .ql-ui:before inside li[data-list=bullet] */
 
