@@ -2,7 +2,16 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 const zlib = require('zlib');
 
 module.exports = function (app) {
-  const apiKey = process.env.REACT_APP_ANTHROPIC_API_KEY || '';
+  // Server-side only — must NOT use the REACT_APP_ prefix, or CRA inlines it
+  // into the client bundle. react-scripts loads .env into the dev-server
+  // process; the dotenv fallback covers runners that don't.
+  let apiKey = process.env.ANTHROPIC_API_KEY || '';
+  if (!apiKey) {
+    try {
+      require('dotenv').config();
+      apiKey = process.env.ANTHROPIC_API_KEY || '';
+    } catch {}
+  }
 
   // Mount at root with an explicit filter so Express does NOT strip the
   // /api/anthropic prefix before the proxy sees it — that lets pathRewrite work.
@@ -17,7 +26,7 @@ module.exports = function (app) {
         proxyReq: (proxyReq) => {
           const destination = 'https://api.anthropic.com' + proxyReq.path;
           console.log('[proxy] Forwarding to:', destination);
-          console.log('[proxy] key length:', apiKey.length, '| starts with:', apiKey.slice(0, 10) || '(missing)');
+          console.log('[proxy] API key', apiKey ? 'present' : 'MISSING — set ANTHROPIC_API_KEY in .env');
           proxyReq.setHeader('x-api-key', apiKey);
           proxyReq.setHeader('anthropic-version', '2023-06-01');
           proxyReq.setHeader('anthropic-dangerous-direct-browser-access', 'true');

@@ -118,7 +118,8 @@ npm install
 # Create a .env file with your credentials
 REACT_APP_SUPABASE_URL=your_supabase_project_url
 REACT_APP_SUPABASE_ANON_KEY=your_supabase_anon_key
-REACT_APP_ANTHROPIC_API_KEY=your_anthropic_api_key
+# Server-side only — no REACT_APP_ prefix, so it never enters the client bundle
+ANTHROPIC_API_KEY=your_anthropic_api_key
 
 # Start the development server
 npm start
