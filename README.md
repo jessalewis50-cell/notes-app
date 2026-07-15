@@ -2,7 +2,7 @@
 
 Almanac is a full-stack note-taking web application built as part of a product management portfolio. Designed and directed by a non-technical PM using Claude Code as the development agent — demonstrating end-to-end product ownership from concept to deployed product.
 
-**Live App:** [notes-app-tau-livid.vercel.app](https://notes-app-tau-livid.vercel.app)
+**Live App:** [thealmanac.vercel.app](https://thealmanac.vercel.app)
 
 ---
 
@@ -159,4 +159,4 @@ Note: The handwriting conversion feature requires a valid Anthropic API key with
 
 Built by Jess Lewis as part of a product management portfolio. Directed entirely in plain English using Claude Code as the AI development agent — demonstrating that strong product thinking, clear requirements, and iterative feedback loops are the core skills that ship great software.
 
-[GitHub](https://github.com/jessalewis50-cell/notes-app) · [Live App](https://notes-app-tau-livid.vercel.app)
+[GitHub](https://github.com/jessalewis50-cell/notes-app) · [Live App](https://thealmanac.vercel.app)
