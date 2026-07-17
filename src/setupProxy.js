@@ -27,6 +27,10 @@ module.exports = function (app) {
           const destination = 'https://api.anthropic.com' + proxyReq.path;
           console.log('[proxy] Forwarding to:', destination);
           console.log('[proxy] API key', apiKey ? 'present' : 'MISSING — set ANTHROPIC_API_KEY in .env');
+          // The app now sends the user's Supabase token in Authorization for
+          // the production proxy. Anthropic must never see it (it would clash
+          // with x-api-key), so drop it before forwarding.
+          proxyReq.removeHeader('authorization');
           proxyReq.setHeader('x-api-key', apiKey);
           proxyReq.setHeader('anthropic-version', '2023-06-01');
           proxyReq.setHeader('anthropic-dangerous-direct-browser-access', 'true');

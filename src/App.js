@@ -4,6 +4,7 @@ import { supabase } from './supabaseClient';
 import LearningPlanPanel, { LearningPlanIcon } from './LearningPlanPanel';
 import RestructurePanel, { RestructureIcon } from './RestructurePanel';
 import { searchNotes, stripSearchHighlights } from './noteSearch';
+import { authHeaders, AIError } from './aiClient';
 import { FindBar, SearchResults } from './FindBar';
 import { motion, useAnimation } from 'framer-motion';
 import ReactQuill from 'react-quill-new';
@@ -1087,7 +1088,7 @@ export default function App() {
       try {
         response = await fetch('/api/anthropic/v1/messages', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'anthropic-dangerous-direct-browser-access': 'true' },
+          headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
           body: JSON.stringify({
             model: 'claude-sonnet-4-6', max_tokens: 1024,
             system: 'You are a handwriting recognition assistant. The user will send you an image of handwritten notes on a canvas. Your job is to transcribe the handwriting as accurately as possible into plain text. Preserve the structure of the writing. For bullet points: use "- " (dash + space) for top-level bullets and "  - " (two spaces + dash + space) for visually indented sub-bullets that appear further to the right beneath a parent bullet. If there are numbered lists transcribe them as numbered lists. Keep multiple lines as separate lines and preserve other indentation. Return only the transcribed text with no explanation or commentary.',
@@ -1120,7 +1121,7 @@ export default function App() {
       updateStrokes([]); drawingCanvasRef.current?.clearCanvas();
     } catch (err) {
       console.warn('Convert:', err);
-      setConvertError('Could not convert handwriting — please try again.');
+      setConvertError(err instanceof AIError ? err.message : 'Could not convert handwriting — please try again.');
     } finally { setConverting(false); }
   }, [activeNote, converting, updateStrokes, onEditorInput]); // eslint-disable-line react-hooks/exhaustive-deps
 

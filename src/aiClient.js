@@ -6,6 +6,8 @@
 // Loading is caller-driven: wrap the returned promise (and onText for streams)
 // in your own state, the way convertDrawingToText does with `converting`.
 
+import { supabase } from './supabaseClient';
+
 const ENDPOINT = '/api/anthropic/v1/messages';
 export const AI_MODEL = 'claude-sonnet-4-6'; // same model as the handwriting feature
 
@@ -50,12 +52,26 @@ async function parseErrorResponse(response) {
   return detail ? `AI request failed (${response.status}): ${detail}` : `AI request failed (HTTP ${response.status})`;
 }
 
+/**
+ * Authorization header carrying the signed-in user's Supabase access token.
+ * The serverless proxy verifies it before forwarding anything to Anthropic.
+ * Throws a friendly AIError when there is no session (e.g. guest mode).
+ */
+export async function authHeaders() {
+  const { data: { session } = {} } = await supabase.auth.getSession();
+  if (!session?.access_token) {
+    throw new AIError('Please sign in to use AI features.', { status: 401, retryable: false });
+  }
+  return { Authorization: `Bearer ${session.access_token}` };
+}
+
 async function request(body, { signal, endpoint = ENDPOINT } = {}) {
+  const auth = await authHeaders();
   let response;
   try {
     response = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...auth },
       body: JSON.stringify(body),
       signal,
     });
