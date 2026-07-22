@@ -838,19 +838,37 @@ export default function App() {
     setEraserActive(false);
   }, []);
 
-  // Create a note from generated HTML, reusing the existing persistence flow:
-  // seeding pendingContentRef makes the eid effect paste the content into the
-  // editor, and doAutosave insert it through the normal path (guest mode
-  // persists via the localStorage effect instead). If created from folder
-  // view, the new note lands in that folder.
-  const createNoteFromHtml = useCallback((title, html) => {
-    const n = { ...makeNote(viewFolderId || null), title, content: html };
+  // Persist a generated note (learning plan / restructure copy) IMMEDIATELY.
+  // Generated notes must not depend on the debounced autosave: the shared
+  // 3s timer is cancelled by a reload or by any other note's next keystroke,
+  // which silently lost plan notes (the folder, inserted directly, survived).
+  // Returns the note object that should go into state — the saved Supabase
+  // row when signed in, or a local note (old path) for guests / on failure.
+  const insertGeneratedNote = useCallback(async (title, html, folderId) => {
+    const sess = sessionRef.current;
+    if (sess) {
+      const { data, error } = await supabase.from('notes')
+        .insert({ title: title || 'Untitled', content: html || '', user_id: sess.user.id, folder_id: folderId || null })
+        .select().single();
+      if (!error && data) return mapNote(data);
+      console.error('Generated-note insert failed, falling back to autosave:', error);
+    }
+    const n = { ...makeNote(folderId || null), title, content: html };
+    scheduleAutosave(n.id);
+    return n;
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Create a note from generated HTML. The note is persisted up front (see
+  // insertGeneratedNote); seeding pendingContentRef makes the eid effect
+  // paste the content into the editor. If created from folder view, the new
+  // note lands in that folder.
+  const createNoteFromHtml = useCallback(async (title, html) => {
+    const n = await insertGeneratedNote(title, html, viewFolderId || null);
     pendingContentRef.current[n.id] = html;
     setNotes(p => [n, ...p]);
     setActiveId(n.id);
     setViewFolderId(null);
-    scheduleAutosave(n.id);
-  }, [viewFolderId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [viewFolderId, insertGeneratedNote]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Plans grounded in notes save as a plain note; plans built purely from the
   // learner's description get their own new folder with the plan note inside.
@@ -864,12 +882,11 @@ export default function App() {
       if (!error && folder) {
         setFolders(p => [...p, folder]);
         setExpandedFolderIds(s => new Set([...s, folder.id]));
-        const n = { ...makeNote(folder.id), title: planTitle, content: html };
+        const n = await insertGeneratedNote(planTitle, html, folder.id);
         pendingContentRef.current[n.id] = html;
         setNotes(p => [n, ...p]);
         setActiveId(n.id);
         setViewFolderId(null);
-        scheduleAutosave(n.id);
         setShowPlanPanel(null);
         return;
       }
@@ -877,7 +894,7 @@ export default function App() {
     }
     createNoteFromHtml(planTitle, html);
     setShowPlanPanel(null);
-  }, [createNoteFromHtml]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [createNoteFromHtml, insertGeneratedNote]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const saveRestructureAsNote = useCallback((title, html) => {
     createNoteFromHtml(title || 'Restructured note', html);
