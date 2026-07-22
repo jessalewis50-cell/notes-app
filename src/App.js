@@ -1101,7 +1101,11 @@ export default function App() {
       } catch (fetchErr) { console.error('Fetch error:', fetchErr); throw fetchErr; }
       if (!response.ok) {
         let eb; try { eb = await response.json(); } catch { eb = await response.text(); }
-        console.error('API error:', response.status, eb); throw new Error(`HTTP ${response.status}`);
+        console.error('API error:', response.status, eb);
+        if (eb?.code === 'upgrade_required' && eb?.error) {
+          throw new AIError(eb.error, { status: response.status, retryable: false });
+        }
+        throw new Error(`HTTP ${response.status}`);
       }
       const data = await response.json();
       const rawText = data.content?.[0]?.text;

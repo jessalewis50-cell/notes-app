@@ -43,12 +43,16 @@ function isRetryableStatus(s) {
 
 async function parseErrorResponse(response) {
   let detail = '';
+  let code = null;
   try {
     const data = await response.json();
     detail = data?.error?.message || data?.error || '';
+    code = data?.code || null;
   } catch {
     try { detail = await response.text(); } catch {}
   }
+  // The server's upgrade notice is already user-facing copy — show it verbatim.
+  if (code === 'upgrade_required' && detail) return detail;
   return detail ? `AI request failed (${response.status}): ${detail}` : `AI request failed (HTTP ${response.status})`;
 }
 

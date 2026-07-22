@@ -73,6 +73,33 @@ function validateBody(body) {
   return null;
 }
 
+// Entitlement check — mirrors cadence/src/lib/entitlements.ts (the canonical
+// plan → entitlement mapping; keep the two in sync). Almanac AI requires the
+// almanac_pro or cadence_plus plan. No Stripe yet: a null current_period_end
+// means "valid through the end of the current calendar month" (UTC) and a
+// null subscription_status counts as active. Fails closed on read errors.
+async function hasAlmanacAI(userId) {
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!serviceKey || !SUPABASE_URL) return false;
+  const service = createClient(SUPABASE_URL, serviceKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const { data, error } = await service
+    .from('profiles')
+    .select('plans, subscription_status, current_period_end')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error || !data) return false;
+  const status = data.subscription_status;
+  if (status !== null && status !== 'active' && status !== 'trialing') return false;
+  const now = new Date();
+  const end = data.current_period_end
+    ? new Date(data.current_period_end)
+    : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+  if (end.getTime() <= now.getTime()) return false;
+  return data.plans.includes('almanac_pro') || data.plans.includes('cadence_plus');
+}
+
 // Best-effort usage log — a logging failure must never fail the user's request.
 async function logUsage(userId, model, usage) {
   try {
@@ -116,6 +143,16 @@ export default async function handler(req, res) {
   const { data: { user } = {}, error: authError } = await supabaseAuth.auth.getUser(token);
   if (authError || !user) {
     return res.status(401).json({ error: 'Sign in required.' });
+  }
+
+  // ── 1b. Entitlement gate — paid plans only, checked before any Anthropic call
+  if (!(await hasAlmanacAI(user.id))) {
+    return res.status(403).json({
+      error: 'This is a paid feature — it needs Almanac Pro (or Cadence Plus).',
+      code: 'upgrade_required',
+      feature: 'almanac_ai',
+      required_plans: ['almanac_pro', 'cadence_plus'],
+    });
   }
 
   // ── 2. Validate and rebuild the payload (never forward req.body as-is) ────
